@@ -1,4 +1,4 @@
-/* vi:set ts=8 sts=4 sw=4:
+/* vi:set ts=8 sts=4 sw=4 noet:
  *
  * VIM - Vi IMproved	by Bram Moolenaar
  *
@@ -1815,7 +1815,7 @@ screen_puts_mbyte(char_u *s, int l, int attr)
     void
 msg_puts(char_u *s)
 {
- msg_puts_attr(s, 0);
+    msg_puts_attr(s, 0);
 }
 
     void
@@ -2462,7 +2462,7 @@ msg_puts_printf(char_u *str, int maxlen)
     if (!(silent_mode && p_verbose == 0))
 	mch_settmode(TMODE_COOK);	/* handle '\r' and '\n' correctly */
 #endif
-    while (*s != NUL && (maxlen < 0 || (int)(s - str) < maxlen))
+    while ((maxlen < 0 || (int)(s - str) < maxlen) && *s != NUL)
     {
 	if (!(silent_mode && p_verbose == 0))
 	{
@@ -3990,6 +3990,30 @@ tv_float(typval_T *tvs, int *idxp)
 # endif
 #endif
 
+#ifdef FEAT_FLOAT
+/*
+ * Return the representation of infinity for printf() function:
+ * "-inf", "inf", "+inf", " inf", "-INF", "INF", "+INF" or " INF".
+ */
+    static const char *
+infinity_str(int positive,
+	     char fmt_spec,
+	     int force_sign,
+	     int space_for_positive)
+{
+    static const char *table[] =
+    {
+	"-inf", "inf", "+inf", " inf",
+	"-INF", "INF", "+INF", " INF"
+    };
+    int idx = positive * (1 + force_sign + force_sign * space_for_positive);
+
+    if (ASCII_ISUPPER(fmt_spec))
+	idx += 4;
+    return table[idx];
+}
+#endif
+
 /*
  * This code was included to provide a portable vsnprintf() and snprintf().
  * Some systems may provide their own, but we always use this one for
@@ -4006,10 +4030,10 @@ tv_float(typval_T *tvs, int *idxp)
  * with flags: '-', '+', ' ', '0' and '#'.
  * An asterisk is supported for field width as well as precision.
  *
- * Limited support for floating point was added: 'f', 'e', 'E', 'g', 'G'.
+ * Limited support for floating point was added: 'f', 'F', 'e', 'E', 'g', 'G'.
  *
- * Length modifiers 'h' (short int) and 'l' (long int) are supported.
- * 'll' (long long int) is not supported.
+ * Length modifiers 'h' (short int) and 'l' (long int) and 'll' (long long int)
+ * are supported.
  *
  * The locale is not used, the string is used as a byte string.  This is only
  * relevant for double-byte encodings where the second byte may be '%'.
@@ -4262,7 +4286,6 @@ vim_vsnprintf(
 		case 'D': fmt_spec = 'd'; length_modifier = 'l'; break;
 		case 'U': fmt_spec = 'u'; length_modifier = 'l'; break;
 		case 'O': fmt_spec = 'o'; length_modifier = 'l'; break;
-		case 'F': fmt_spec = 'f'; break;
 		default: break;
 	    }
 
@@ -4397,7 +4420,7 @@ vim_vsnprintf(
 		    uvarnumber_T ullong_arg = 0;
 # endif
 
-		    /* only defined for b convertion */
+		    /* only defined for b conversion */
 		    uvarnumber_T bin_arg = 0;
 
 		    /* pointer argument value -only defined for p
@@ -4691,6 +4714,7 @@ vim_vsnprintf(
 
 # ifdef FEAT_FLOAT
 	    case 'f':
+	    case 'F':
 	    case 'e':
 	    case 'E':
 	    case 'g':
@@ -4702,7 +4726,6 @@ vim_vsnprintf(
 		    char	format[40];
 		    int		l;
 		    int		remove_trailing_zeroes = FALSE;
-		    char	*s;
 
 		    f =
 #  if defined(FEAT_EVAL)
@@ -4717,13 +4740,13 @@ vim_vsnprintf(
 			 * "1.0" as "1", we don't want that. */
 			if ((abs_f >= 0.001 && abs_f < 10000000.0)
 							      || abs_f == 0.0)
-			    fmt_spec = 'f';
+			    fmt_spec = ASCII_ISUPPER(fmt_spec) ? 'F' : 'f';
 			else
 			    fmt_spec = fmt_spec == 'g' ? 'e' : 'E';
 			remove_trailing_zeroes = TRUE;
 		    }
 
-		    if (fmt_spec == 'f' &&
+		    if ((fmt_spec == 'f' || fmt_spec == 'F') &&
 #  ifdef VAX
 			    abs_f > 1.0e38
 #  else
@@ -4732,52 +4755,53 @@ vim_vsnprintf(
 			    )
 		    {
 			/* Avoid a buffer overflow */
-			if (f < 0)
-			{
-			    strcpy(tmp, "-inf");
-			    str_arg_l = 4;
-			}
-			else
-			{
-			    strcpy(tmp, "inf");
-			    str_arg_l = 3;
-			}
+			STRCPY(tmp, infinity_str(f > 0.0, fmt_spec,
+					      force_sign, space_for_positive));
+			str_arg_l = STRLEN(tmp);
+			zero_padding = 0;
 		    }
 		    else
 		    {
-			format[0] = '%';
-			l = 1;
-			if (precision_specified)
+			if (isnan(f))
 			{
-			    size_t max_prec = TMP_LEN - 10;
-
-			    /* Make sure we don't get more digits than we
-			     * have room for. */
-			    if (fmt_spec == 'f' && abs_f > 1.0)
-				max_prec -= (size_t)log10(abs_f);
-			    if (precision > max_prec)
-				precision = max_prec;
-			    l += sprintf(format + 1, ".%d", (int)precision);
+			    /* Not a number: nan or NAN */
+			    STRCPY(tmp, ASCII_ISUPPER(fmt_spec) ? "NAN"
+								      : "nan");
+			    str_arg_l = 3;
+			    zero_padding = 0;
 			}
-			format[l] = fmt_spec;
-			format[l + 1] = NUL;
-			str_arg_l = sprintf(tmp, format, f);
+			else if (isinf(f))
+			{
+			    STRCPY(tmp, infinity_str(f > 0.0, fmt_spec,
+					      force_sign, space_for_positive));
+			    str_arg_l = STRLEN(tmp);
+			    zero_padding = 0;
+			}
+			else
+                        {
+			    /* Regular float number */
+			    format[0] = '%';
+			    l = 1;
+			    if (force_sign)
+				format[l++] = space_for_positive ? ' ' : '+';
+			    if (precision_specified)
+			    {
+				size_t max_prec = TMP_LEN - 10;
 
-			/* Be consistent: Change "1.#IND" to "nan" and
-			 * "1.#INF" to "inf". */
-			s = *tmp == '-' ? tmp + 1 : tmp;
-			if (STRNCMP(s, "1.#INF", 6) == 0)
-			    STRCPY(s, "inf");
-			else if (STRNCMP(s, "1.#IND", 6) == 0)
-			    STRCPY(s, "nan");
+				/* Make sure we don't get more digits than we
+				 * have room for. */
+				if ((fmt_spec == 'f' || fmt_spec == 'F')
+								&& abs_f > 1.0)
+				    max_prec -= (size_t)log10(abs_f);
+				if (precision > max_prec)
+				    precision = max_prec;
+				l += sprintf(format + l, ".%d", (int)precision);
+			    }
+			    format[l] = fmt_spec == 'F' ? 'f' : fmt_spec;
+			    format[l + 1] = NUL;
 
-			/* Remove sign before "nan". */
-			if (STRNCMP(tmp, "-nan", 4) == 0)
-			    STRCPY(tmp, "nan");
-
-			/* Add sign before "inf" if needed. */
-			if (isinf(f) == -1 && STRNCMP(tmp, "inf", 3) == 0)
-			    STRCPY(tmp, "-inf");
+			    str_arg_l = sprintf(tmp, format, f);
+                        }
 
 			if (remove_trailing_zeroes)
 			{
@@ -4785,7 +4809,7 @@ vim_vsnprintf(
 			    char *tp;
 
 			    /* Using %g or %G: remove superfluous zeroes. */
-			    if (fmt_spec == 'f')
+			    if (fmt_spec == 'f' || fmt_spec == 'F')
 				tp = tmp + str_arg_l - 1;
 			    else
 			    {
@@ -4841,6 +4865,13 @@ vim_vsnprintf(
 				--str_arg_l;
 			    }
 			}
+		    }
+		    if (zero_padding && min_field_width > str_arg_l
+					      && (tmp[0] == '-' || force_sign))
+		    {
+			/* padding 0's should be inserted after the sign */
+			number_of_zeros_to_pad = min_field_width - str_arg_l;
+			zero_padding_insertion_ind = 1;
 		    }
 		    str_arg = tmp;
 		    break;

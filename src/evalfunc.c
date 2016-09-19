@@ -1,4 +1,4 @@
-/* vi:set ts=8 sts=4 sw=4:
+/* vi:set ts=8 sts=4 sw=4 noet:
  *
  * VIM - Vi IMproved	by Bram Moolenaar
  *
@@ -77,6 +77,7 @@ static void f_ceil(typval_T *argvars, typval_T *rettv);
 #endif
 #ifdef FEAT_JOB_CHANNEL
 static void f_ch_close(typval_T *argvars, typval_T *rettv);
+static void f_ch_close_in(typval_T *argvars, typval_T *rettv);
 static void f_ch_evalexpr(typval_T *argvars, typval_T *rettv);
 static void f_ch_evalraw(typval_T *argvars, typval_T *rettv);
 static void f_ch_getbufnr(typval_T *argvars, typval_T *rettv);
@@ -499,6 +500,7 @@ static struct fst
 #endif
 #ifdef FEAT_JOB_CHANNEL
     {"ch_close",	1, 1, f_ch_close},
+    {"ch_close_in",	1, 1, f_ch_close_in},
     {"ch_evalexpr",	2, 3, f_ch_evalexpr},
     {"ch_evalraw",	2, 3, f_ch_evalraw},
     {"ch_getbufnr",	2, 2, f_ch_getbufnr},
@@ -1789,6 +1791,18 @@ f_ch_close(typval_T *argvars, typval_T *rettv UNUSED)
 	channel_close(channel, FALSE);
 	channel_clear(channel);
     }
+}
+
+/*
+ * "ch_close()" function
+ */
+    static void
+f_ch_close_in(typval_T *argvars, typval_T *rettv UNUSED)
+{
+    channel_T *channel = get_channel_arg(&argvars[0], TRUE, FALSE, 0);
+
+    if (channel != NULL)
+	channel_close_in(channel);
 }
 
 /*
@@ -3598,7 +3612,7 @@ common_function(typval_T *argvars, typval_T *rettv, int is_funcref)
 
     if (s == NULL || *s == NUL || (use_string && VIM_ISDIGIT(*s))
 					 || (is_funcref && trans_name == NULL))
-	EMSG2(_(e_invarg2), s);
+	EMSG2(_(e_invarg2), use_string ? get_tv_string(&argvars[0]) : s);
     /* Don't check an autoload name for existence here. */
     else if (trans_name != NULL && (is_funcref
 				? find_func(trans_name) == NULL
@@ -3905,8 +3919,7 @@ get_buffer_signs(buf_T *buf, list_T *l)
 	{
 	    dict_add_nr_str(d, "id", sign->id, NULL);
 	    dict_add_nr_str(d, "lnum", sign->lnum, NULL);
-	    dict_add_nr_str(d, "name", 0L,
-		    vim_strsave(sign_typenr2name(sign->typenr)));
+	    dict_add_nr_str(d, "name", 0L, sign_typenr2name(sign->typenr));
 
 	    list_append_dict(l, d);
 	}
@@ -7616,7 +7629,7 @@ max_min(typval_T *argvars, typval_T *rettv, int domax)
 	}
     }
     else
-	EMSG(_(e_listdictarg));
+	EMSG2(_(e_listdictarg), domax ? "max()" : "min()");
     rettv->vval.v_number = error ? 0 : n;
 }
 
@@ -12385,12 +12398,14 @@ f_timer_pause(typval_T *argvars, typval_T *rettv UNUSED)
     static void
 f_timer_start(typval_T *argvars, typval_T *rettv)
 {
-    long    msec = (long)get_tv_number(&argvars[0]);
-    timer_T *timer;
-    int	    repeat = 0;
-    char_u  *callback;
-    dict_T  *dict;
+    long	msec = (long)get_tv_number(&argvars[0]);
+    timer_T	*timer;
+    int		repeat = 0;
+    char_u	*callback;
+    dict_T	*dict;
+    partial_T	*partial;
 
+    rettv->vval.v_number = -1;
     if (check_secure())
 	return;
     if (argvars[2].v_type != VAR_UNKNOWN)
@@ -12405,21 +12420,22 @@ f_timer_start(typval_T *argvars, typval_T *rettv)
 	    repeat = get_dict_number(dict, (char_u *)"repeat");
     }
 
-    timer = create_timer(msec, repeat);
-    callback = get_callback(&argvars[1], &timer->tr_partial);
+    callback = get_callback(&argvars[1], &partial);
     if (callback == NULL)
-    {
-	stop_timer(timer);
-	rettv->vval.v_number = -1;
-    }
+	return;
+
+    timer = create_timer(msec, repeat);
+    if (timer == NULL)
+	free_callback(callback, partial);
     else
     {
-	if (timer->tr_partial == NULL)
+	if (partial == NULL)
 	    timer->tr_callback = vim_strsave(callback);
 	else
 	    /* pointer into the partial */
 	    timer->tr_callback = callback;
-	rettv->vval.v_number = timer->tr_id;
+	timer->tr_partial = partial;
+	rettv->vval.v_number = (varnumber_T)timer->tr_id;
     }
 }
 

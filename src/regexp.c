@@ -1,4 +1,4 @@
-/* vi:set ts=8 sts=4 sw=4:
+/* vi:set ts=8 sts=4 sw=4 noet:
  *
  * Handling of regular expressions: vim_regcomp(), vim_regexec(), vim_regsub()
  *
@@ -254,9 +254,6 @@
 #define Magic(x)	((int)(x) - 256)
 #define un_Magic(x)	((x) + 256)
 #define is_Magic(x)	((x) < 0)
-
-static int no_Magic(int x);
-static int toggle_Magic(int x);
 
     static int
 no_Magic(int x)
