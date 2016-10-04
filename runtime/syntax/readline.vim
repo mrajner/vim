@@ -144,6 +144,7 @@ syn keyword readlineVariable    contained
                               \ show-all-if-unmodified
                               \ skip-completed-text
                               \ visible-stats
+                              \ colored-stats
 
 syn keyword readlineVariable    contained
                               \ nextgroup=readlineString
