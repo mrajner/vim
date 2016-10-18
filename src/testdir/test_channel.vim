@@ -1362,6 +1362,24 @@ func Test_exit_callback()
   endif
 endfunc
 
+let g:exit_cb_time = {'start': 0, 'end': 0}
+function MyExitTimeCb(job, status)
+  let g:exit_cb_time.end = reltime(g:exit_cb_time.start)
+endfunction
+
+func Test_exit_callback_interval()
+  if !has('job')
+    return
+  endif
+
+  let g:exit_cb_time.start = reltime()
+  let job = job_start([s:python, '-c', 'import time;time.sleep(0.5)'], {'exit_cb': 'MyExitTimeCb'})
+  call WaitFor('g:exit_cb_time.end != 0')
+  let elapsed = reltimefloat(g:exit_cb_time.end)
+  call assert_true(elapsed > 0.3)
+  call assert_true(elapsed < 1.0)
+endfunc
+
 """""""""
 
 let g:Ch_close_ret = 'alive'
@@ -1413,6 +1431,21 @@ endfunc
 func Test_job_start_invalid()
   call assert_fails('call job_start($x)', 'E474:')
   call assert_fails('call job_start("")', 'E474:')
+endfunc
+
+func Test_job_stop_immediately()
+  if !has('job')
+    return
+  endif
+
+  let job = job_start([s:python, '-c', 'import time;time.sleep(10)'])
+  try
+    call job_stop(job)
+    call WaitFor('"dead" == job_status(job)')
+    call assert_equal('dead', job_status(job))
+  finally
+    call job_stop(job, 'kill')
+  endtry
 endfunc
 
 " This was leaking memory.
