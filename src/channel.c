@@ -19,7 +19,7 @@
 # define CH_HAS_GUI (gui.in_use || gui.starting)
 #endif
 
-/* Note: when making changes here also adjust configure.in. */
+/* Note: when making changes here also adjust configure.ac. */
 #ifdef WIN32
 /* WinSock API is separated from C API, thus we can't use read(), write(),
  * errno... */
@@ -1341,7 +1341,7 @@ write_buf_line(buf_T *buf, linenr_T lnum, channel_T *channel)
 
     p[len] = NL;
     p[len + 1] = NUL;
-    channel_send(channel, PART_IN, p, len + 1, "write_buf_line()");
+    channel_send(channel, PART_IN, p, len + 1, "write_buf_line");
     vim_free(p);
 }
 
@@ -3450,7 +3450,12 @@ channel_handle_events(void)
  * Return FAIL or OK.
  */
     int
-channel_send(channel_T *channel, ch_part_T part, char_u *buf, int len, char *fun)
+channel_send(
+	channel_T *channel,
+	ch_part_T part,
+	char_u	  *buf,
+	int	  len,
+	char	  *fun)
 {
     int		res;
     sock_T	fd;
@@ -4643,8 +4648,8 @@ job_stop_on_exit(void)
 }
 
 /*
- * Return TRUE when there is any job that might exit, which means
- * job_check_ended() should be called once in a while.
+ * Return TRUE when there is any job that has an exit callback and might exit,
+ * which means job_check_ended() should be called more often.
  */
     int
 has_pending_job(void)
@@ -4652,7 +4657,11 @@ has_pending_job(void)
     job_T	    *job;
 
     for (job = first_job; job != NULL; job = job->jv_next)
-	if (job_still_alive(job))
+	/* Only should check if the channel has been closed, if the channel is
+	 * open the job won't exit. */
+	if (job->jv_status == JOB_STARTED && job->jv_exit_cb != NULL
+		&& (job->jv_channel == NULL
+		    || !channel_still_useful(job->jv_channel)))
 	    return TRUE;
     return FALSE;
 }
