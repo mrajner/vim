@@ -50,6 +50,10 @@
 # endif
 #endif
 
+#ifdef FEAT_JOB_CHANNEL
+# include <tlhelp32.h>
+#endif
+
 #ifdef __MINGW32__
 # ifndef FROM_LEFT_1ST_BUTTON_PRESSED
 #  define FROM_LEFT_1ST_BUTTON_PRESSED    0x0001
@@ -4701,12 +4705,24 @@ mch_call_shell(
 #if defined(FEAT_GUI_W32)
 		if (need_vimrun_warning)
 		{
-		    MessageBox(NULL,
-			    _("VIMRUN.EXE not found in your $PATH.\n"
-				"External commands will not pause after completion.\n"
-				"See  :help win32-vimrun  for more information."),
-			    _("Vim Warning"),
-			    MB_ICONWARNING);
+		    char *msg = _("VIMRUN.EXE not found in your $PATH.\n"
+			"External commands will not pause after completion.\n"
+			"See  :help win32-vimrun  for more information.");
+		    char *title = _("Vim Warning");
+# ifdef FEAT_MBYTE
+		    if (enc_codepage >= 0 && (int)GetACP() != enc_codepage)
+		    {
+			WCHAR *wmsg = enc_to_utf16((char_u *)msg, NULL);
+			WCHAR *wtitle = enc_to_utf16((char_u *)title, NULL);
+
+			if (wmsg != NULL && wtitle != NULL)
+			    MessageBoxW(NULL, wmsg, wtitle, MB_ICONWARNING);
+			vim_free(wmsg);
+			vim_free(wtitle);
+		    }
+		    else
+# endif
+			MessageBox(NULL, msg, title, MB_ICONWARNING);
 		    need_vimrun_warning = FALSE;
 		}
 		if (!s_dont_use_vimrun && p_stmp)
@@ -4974,7 +4990,7 @@ mch_job_status(job_T *job)
 	    || dwExitCode != STILL_ACTIVE)
     {
 	job->jv_exitval = (int)dwExitCode;
-	if (job->jv_status != JOB_ENDED)
+	if (job->jv_status < JOB_ENDED)
 	{
 	    ch_log(job->jv_channel, "Job ended");
 	    job->jv_status = JOB_ENDED;
@@ -5020,6 +5036,48 @@ mch_detect_ended_job(job_T *job_list)
     return NULL;
 }
 
+    static BOOL
+terminate_all(HANDLE process, int code)
+{
+    PROCESSENTRY32  pe;
+    HANDLE	    h = INVALID_HANDLE_VALUE;
+    DWORD	    pid = GetProcessId(process);
+
+    if (pid != 0)
+    {
+	h = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (h != INVALID_HANDLE_VALUE)
+	{
+	    pe.dwSize = sizeof(PROCESSENTRY32);
+	    if (!Process32First(h, &pe))
+		goto theend;
+
+	    do
+	    {
+		if (pe.th32ParentProcessID == pid)
+		{
+		    HANDLE ph = OpenProcess(
+				  PROCESS_ALL_ACCESS, FALSE, pe.th32ProcessID);
+		    if (ph != NULL)
+		    {
+			terminate_all(ph, code);
+			CloseHandle(ph);
+		    }
+		}
+	    } while (Process32Next(h, &pe));
+
+	    CloseHandle(h);
+	}
+    }
+
+theend:
+    return TerminateProcess(process, code);
+}
+
+/*
+ * Send a (deadly) signal to "job".
+ * Return FAIL if it didn't work.
+ */
     int
 mch_stop_job(job_T *job, char_u *how)
 {
@@ -5027,10 +5085,10 @@ mch_stop_job(job_T *job, char_u *how)
 
     if (STRCMP(how, "term") == 0 || STRCMP(how, "kill") == 0 || *how == NUL)
     {
+	/* deadly signal */
 	if (job->jv_job_object != NULL)
 	    return TerminateJobObject(job->jv_job_object, 0) ? OK : FAIL;
-	else
-	    return TerminateProcess(job->jv_proc_info.hProcess, 0) ? OK : FAIL;
+	return terminate_all(job->jv_proc_info.hProcess, 0) ? OK : FAIL;
     }
 
     if (!AttachConsole(job->jv_proc_info.dwProcessId))
