@@ -773,9 +773,7 @@ getcmdline(
 		/*
 		 * Open a window to edit the command line (and history).
 		 */
-		save_cmdline(&save_ccline);
 		c = ex_window();
-		restore_cmdline(&save_ccline);
 		some_key_typed = TRUE;
 	    }
 	}
@@ -1796,6 +1794,10 @@ getcmdline(
 		goto cmdline_not_changed;
 #endif
 
+	case K_PS:
+		bracketed_paste(PASTE_CMDLINE, FALSE, NULL);
+		goto cmdline_changed;
+
 	default:
 #ifdef UNIX
 		if (c == intr_char)
@@ -2368,8 +2370,7 @@ getexmodeline(
 	if (ga_grow(&line_ga, 40) == FAIL)
 	    break;
 
-	/* Get one character at a time.  Don't use inchar(), it can't handle
-	 * special characters. */
+	/* Get one character at a time. */
 	prev_char = c1;
 	c1 = vgetc();
 
@@ -2382,6 +2383,12 @@ getexmodeline(
 	{
 	    msg_putchar('\n');
 	    break;
+	}
+
+	if (c1 == K_PS)
+	{
+	    bracketed_paste(PASTE_EX, FALSE, &line_ga);
+	    goto redraw;
 	}
 
 	if (!escaped)
@@ -4359,7 +4366,9 @@ addstar(
 		|| context == EXPAND_OWNSYNTAX
 		|| context == EXPAND_FILETYPE
 		|| context == EXPAND_PACKADD
-		|| (context == EXPAND_TAGS && fname[0] == '/'))
+		|| ((context == EXPAND_TAGS_LISTFILES
+			|| context == EXPAND_TAGS)
+		    && fname[0] == '/'))
 	    retval = vim_strnsave(fname, len);
 	else
 	{
@@ -6904,9 +6913,7 @@ ex_window(void)
     redraw_later(SOME_VALID);
 
     /* Save the command line info, can be used recursively. */
-    save_ccline = ccline;
-    ccline.cmdbuff = NULL;
-    ccline.cmdprompt = NULL;
+    save_cmdline(&save_ccline);
 
     /* No Ex mode here! */
     exmode_active = 0;
@@ -6953,7 +6960,7 @@ ex_window(void)
 # endif
 
     /* Restore the command line info. */
-    ccline = save_ccline;
+    restore_cmdline(&save_ccline);
     cmdwin_type = 0;
 
     exmode_active = save_exmode;

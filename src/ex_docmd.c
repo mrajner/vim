@@ -4109,6 +4109,12 @@ set_one_cmd_context(
 	case CMD_echoerr:
 	case CMD_call:
 	case CMD_return:
+	case CMD_cexpr:
+	case CMD_caddexpr:
+	case CMD_cgetexpr:
+	case CMD_lexpr:
+	case CMD_laddexpr:
+	case CMD_lgetexpr:
 	    set_context_for_expression(xp, arg, ea.cmdidx);
 	    break;
 
@@ -8857,7 +8863,7 @@ ex_read(exarg_T *eap)
 			  eap->line2, (linenr_T)0, (linenr_T)MAXLNUM, eap, 0);
 
 	}
-	if (i == FAIL)
+	if (i != OK)
 	{
 #if defined(FEAT_AUTOCMD) && defined(FEAT_EVAL)
 	    if (!aborting())

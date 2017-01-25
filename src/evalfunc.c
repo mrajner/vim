@@ -923,34 +923,6 @@ get_expr_name(expand_T *xp, int idx)
 
 #endif /* FEAT_CMDL_COMPL */
 
-#if defined(EBCDIC) || defined(PROTO)
-/*
- * Compare struct fst by function name.
- */
-    static int
-compare_func_name(const void *s1, const void *s2)
-{
-    struct fst *p1 = (struct fst *)s1;
-    struct fst *p2 = (struct fst *)s2;
-
-    return STRCMP(p1->f_name, p2->f_name);
-}
-
-/*
- * Sort the function table by function name.
- * The sorting of the table above is ASCII dependant.
- * On machines using EBCDIC we have to sort it.
- */
-    static void
-sortFunctions(void)
-{
-    int		funcCnt = (int)(sizeof(functions) / sizeof(struct fst)) - 1;
-
-    qsort(functions, (size_t)funcCnt, sizeof(struct fst), compare_func_name);
-}
-#endif
-
-
 /*
  * Find internal function in table above.
  * Return index, or -1 if not found
@@ -3332,21 +3304,12 @@ f_float2nr(typval_T *argvars, typval_T *rettv)
 
     if (get_float_arg(argvars, &f) == OK)
     {
-# ifdef FEAT_NUM64
-	if (f < -0x7fffffffffffffffLL)
-	    rettv->vval.v_number = -0x7fffffffffffffffLL;
-	else if (f > 0x7fffffffffffffffLL)
-	    rettv->vval.v_number = 0x7fffffffffffffffLL;
+	if (f < -VARNUM_MAX)
+	    rettv->vval.v_number = -VARNUM_MAX;
+	else if (f > VARNUM_MAX)
+	    rettv->vval.v_number = VARNUM_MAX;
 	else
 	    rettv->vval.v_number = (varnumber_T)f;
-# else
-	if (f < -0x7fffffff)
-	    rettv->vval.v_number = -0x7fffffff;
-	else if (f > 0x7fffffff)
-	    rettv->vval.v_number = 0x7fffffff;
-	else
-	    rettv->vval.v_number = (varnumber_T)f;
-# endif
     }
 }
 
@@ -4259,7 +4222,7 @@ f_getchar(typval_T *argvars, typval_T *rettv)
     {
 	if (argvars[0].v_type == VAR_UNKNOWN)
 	    /* getchar(): blocking wait. */
-	    n = safe_vgetc();
+	    n = plain_vgetc();
 	else if (get_tv_number_chk(&argvars[0], &error) == 1)
 	    /* getchar(1): only check if char avail */
 	    n = vpeekc_any();
@@ -4268,7 +4231,7 @@ f_getchar(typval_T *argvars, typval_T *rettv)
 	    n = 0;
 	else
 	    /* getchar(0) and char avail: return char */
-	    n = safe_vgetc();
+	    n = plain_vgetc();
 
 	if (n == K_IGNORE)
 	    continue;
@@ -6818,8 +6781,7 @@ f_json_decode(typval_T *argvars, typval_T *rettv)
     reader.js_buf = get_tv_string(&argvars[0]);
     reader.js_fill = NULL;
     reader.js_used = 0;
-    if (json_decode_all(&reader, rettv, 0) != OK)
-	EMSG(_(e_invarg));
+    json_decode_all(&reader, rettv, 0);
 }
 
 /*
@@ -6888,10 +6850,8 @@ f_len(typval_T *argvars, typval_T *rettv)
     }
 }
 
-static void libcall_common(typval_T *argvars, typval_T *rettv, int type);
-
     static void
-libcall_common(typval_T *argvars, typval_T *rettv, int type)
+libcall_common(typval_T *argvars UNUSED, typval_T *rettv, int type)
 {
 #ifdef FEAT_LIBCALL
     char_u		*string_in;
@@ -11067,10 +11027,13 @@ f_sqrt(typval_T *argvars, typval_T *rettv)
 f_str2float(typval_T *argvars, typval_T *rettv)
 {
     char_u *p = skipwhite(get_tv_string(&argvars[0]));
+    int     isneg = (*p == '-');
 
-    if (*p == '+')
+    if (*p == '+' || *p == '-')
 	p = skipwhite(p + 1);
     (void)string2float(p, &rettv->vval.v_float);
+    if (isneg)
+	rettv->vval.v_float *= -1;
     rettv->v_type = VAR_FLOAT;
 }
 #endif
@@ -11085,6 +11048,7 @@ f_str2nr(typval_T *argvars, typval_T *rettv)
     char_u	*p;
     varnumber_T	n;
     int		what;
+    int		isneg;
 
     if (argvars[1].v_type != VAR_UNKNOWN)
     {
@@ -11097,7 +11061,8 @@ f_str2nr(typval_T *argvars, typval_T *rettv)
     }
 
     p = skipwhite(get_tv_string(&argvars[0]));
-    if (*p == '+')
+    isneg = (*p == '-');
+    if (*p == '+' || *p == '-')
 	p = skipwhite(p + 1);
     switch (base)
     {
@@ -11107,7 +11072,11 @@ f_str2nr(typval_T *argvars, typval_T *rettv)
 	default: what = 0;
     }
     vim_str2nr(p, NULL, NULL, what, &n, NULL, 0);
-    rettv->vval.v_number = n;
+    if (isneg)
+	rettv->vval.v_number = -n;
+    else
+	rettv->vval.v_number = n;
+
 }
 
 #ifdef HAVE_STRFTIME
@@ -11854,6 +11823,7 @@ get_cmd_output_as_rettv(
 	    if (buf == NULL)
 	    {
 		EMSGN(_(e_nobufnr), argvars[1].vval.v_number);
+		fclose(fd);
 		goto errret;
 	    }
 
