@@ -546,6 +546,7 @@ EXTERN int	clip_unnamed_saved INIT(= 0);
 EXTERN win_T	*firstwin;		/* first window */
 EXTERN win_T	*lastwin;		/* last window */
 EXTERN win_T	*prevwin INIT(= NULL);	/* previous window */
+# define ONE_WINDOW (firstwin == lastwin)
 # define W_NEXT(wp) ((wp)->w_next)
 # define FOR_ALL_WINDOWS(wp) for (wp = firstwin; wp != NULL; wp = wp->w_next)
 # define FOR_ALL_TABPAGES(tp) for (tp = first_tabpage; tp != NULL; tp = tp->tp_next)
@@ -563,6 +564,7 @@ EXTERN win_T	*prevwin INIT(= NULL);	/* previous window */
 #else
 # define firstwin curwin
 # define lastwin curwin
+# define ONE_WINDOW 1
 # define W_NEXT(wp) NULL
 # define FOR_ALL_WINDOWS(wp) wp = curwin;
 # define FOR_ALL_TABPAGES(tp) for (;FALSE;)
@@ -641,6 +643,8 @@ EXTERN int	exiting INIT(= FALSE);
 EXTERN int	really_exiting INIT(= FALSE);
 				/* TRUE when we are sure to exit, e.g., after
 				 * a deadly signal */
+EXTERN int	stdout_isatty INIT(= TRUE);	/* is stdout a terminal? */
+
 #if defined(FEAT_AUTOCHDIR)
 EXTERN int	test_autochdir INIT(= FALSE);
 #endif
@@ -1084,7 +1088,7 @@ EXTERN pos_T	last_cursormoved	      /* for CursorMoved event */
 			= INIT_POS_T(0, 0, 0)
 # endif
 			;
-EXTERN int	last_changedtick INIT(= 0);   /* for TextChanged event */
+EXTERN varnumber_T last_changedtick INIT(= 0);   /* for TextChanged event */
 EXTERN buf_T	*last_changedtick_buf INIT(= NULL);
 #endif
 
@@ -1438,6 +1442,7 @@ EXTERN char_u e_font[]		INIT(= N_("E235: Unknown font: %s"));
 EXTERN char_u e_fontwidth[]	INIT(= N_("E236: Font \"%s\" is not fixed-width"));
 #endif
 EXTERN char_u e_internal[]	INIT(= N_("E473: Internal error"));
+EXTERN char_u e_intern2[]	INIT(= N_("E685: Internal error: %s"));
 EXTERN char_u e_interr[]	INIT(= N_("Interrupted"));
 EXTERN char_u e_invaddr[]	INIT(= N_("E14: Invalid address"));
 EXTERN char_u e_invarg[]	INIT(= N_("E474: Invalid argument"));
@@ -1576,7 +1581,7 @@ EXTERN char_u e_winheight[]	INIT(= N_("E591: 'winheight' cannot be smaller than 
 EXTERN char_u e_winwidth[]	INIT(= N_("E592: 'winwidth' cannot be smaller than 'winminwidth'"));
 #endif
 EXTERN char_u e_write[]		INIT(= N_("E80: Error while writing"));
-EXTERN char_u e_zerocount[]	INIT(= N_("Zero count"));
+EXTERN char_u e_zerocount[]	INIT(= N_("E939: Positive count required"));
 #ifdef FEAT_EVAL
 EXTERN char_u e_usingsid[]	INIT(= N_("E81: Using <SID> not in a script context"));
 #endif
@@ -1587,7 +1592,6 @@ EXTERN char_u e_invexprmsg[]	INIT(= N_("E449: Invalid expression received"));
 EXTERN char_u e_guarded[]	INIT(= N_("E463: Region is guarded, cannot modify"));
 EXTERN char_u e_nbreadonly[]	INIT(= N_("E744: NetBeans does not allow changes in read-only files"));
 #endif
-EXTERN char_u e_intern2[]	INIT(= N_("E685: Internal error: %s"));
 EXTERN char_u e_maxmempat[]	INIT(= N_("E363: pattern uses more memory than 'maxmempattern'"));
 EXTERN char_u e_emptybuf[]	INIT(= N_("E749: empty buffer"));
 EXTERN char_u e_nobufnr[]	INIT(= N_("E86: Buffer %ld does not exist"));

@@ -309,6 +309,7 @@ static int	dont_sync_undo = FALSE;	/* CTRL-G U prevents syncing undo for
  * "cmdchar" can be:
  * 'i'	normal insert command
  * 'a'	normal append command
+ * K_PS bracketed paste
  * 'R'	replace command
  * 'r'	"r<CR>" command: insert one <CR>.  Note: count can be > 1, for redo,
  *	but still only one <CR> is inserted.  The <Esc> is not used for redo.
@@ -462,7 +463,10 @@ edit(
 	else
 #endif
 	{
-	    AppendCharToRedobuff(cmdchar);
+	    if (cmdchar == K_PS)
+		AppendCharToRedobuff('a');
+	    else
+		AppendCharToRedobuff(cmdchar);
 	    if (cmdchar == 'g')		    /* "gI" command */
 		AppendCharToRedobuff('I');
 	    else if (cmdchar == 'r')	    /* "r<CR>" command */
@@ -530,6 +534,10 @@ edit(
     revins_legal = 0;
     revins_scol = -1;
 #endif
+    if (!p_ek)
+	/* Disable bracketed paste mode, we won't recognize the escape
+	 * sequences. */
+	out_str(T_BD);
 
     /*
      * Handle restarting Insert mode.
@@ -782,10 +790,14 @@ edit(
 	    dont_sync_undo = TRUE;
 	else
 	    dont_sync_undo = FALSE;
-	do
-	{
-	    c = safe_vgetc();
-	} while (c == K_IGNORE);
+	if (cmdchar == K_PS)
+	    /* Got here from normal mode when bracketed paste started. */
+	    c = K_PS;
+	else
+	    do
+	    {
+		c = safe_vgetc();
+	    } while (c == K_IGNORE);
 
 #ifdef FEAT_AUTOCMD
 	/* Don't want K_CURSORHOLD for the second key, e.g., after CTRL-V. */
@@ -1025,7 +1037,7 @@ doESCkey:
 	case Ctrl_Z:	/* suspend when 'insertmode' set */
 	    if (!p_im)
 		goto normalchar;	/* insert CTRL-Z as normal char */
-	    stuffReadbuff((char_u *)":st\r");
+	    do_cmdline_cmd((char_u *)"stop");
 	    c = Ctrl_O;
 	    /*FALLTHROUGH*/
 
@@ -1193,6 +1205,16 @@ doESCkey:
 	    ins_mousescroll(MSCR_RIGHT);
 	    break;
 #endif
+	case K_PS:
+	    bracketed_paste(PASTE_INSERT, FALSE, NULL);
+	    if (cmdchar == K_PS)
+		/* invoked from normal mode, bail out */
+		goto doESCkey;
+	    break;
+	case K_PE:
+	    /* Got K_PE without K_PS, ignore. */
+	    break;
+
 #ifdef FEAT_GUI_TABLINE
 	case K_TABLINE:
 	case K_TABMENU:
@@ -1646,7 +1668,7 @@ ins_redraw(
 #ifdef FEAT_AUTOCMD
     /* Trigger TextChangedI if b_changedtick differs. */
     if (ready && has_textchangedI()
-	    && last_changedtick != curbuf->b_changedtick
+	    && last_changedtick != *curbuf->b_changedtick
 # ifdef FEAT_INS_EXPAND
 	    && !pum_visible()
 # endif
@@ -1655,7 +1677,7 @@ ins_redraw(
 	if (last_changedtick_buf == curbuf)
 	    apply_autocmds(EVENT_TEXTCHANGEDI, NULL, NULL, FALSE, curbuf);
 	last_changedtick_buf = curbuf;
-	last_changedtick = curbuf->b_changedtick;
+	last_changedtick = *curbuf->b_changedtick;
     }
 #endif
 
@@ -2299,7 +2321,7 @@ vim_is_ctrl_x_key(int c)
 	case CTRL_X_EVAL:
 	    return (c == Ctrl_P || c == Ctrl_N);
     }
-    EMSG(_(e_internal));
+    internal_error("vim_is_ctrl_x_key()");
     return FALSE;
 }
 
@@ -2799,6 +2821,7 @@ set_completion(colnr_T startcol, list_T *list)
     if (ctrl_x_mode != 0)
 	ins_compl_prep(' ');
     ins_compl_clear();
+    ins_compl_free();
 
     compl_direction = FORWARD;
     if (startcol > curwin->w_cursor.col)
@@ -3444,10 +3467,13 @@ ins_compl_bs(void)
     mb_ptr_back(line, p);
 
     /* Stop completion when the whole word was deleted.  For Omni completion
-     * allow the word to be deleted, we won't match everything. */
+     * allow the word to be deleted, we won't match everything.
+     * Respect the 'backspace' option. */
     if ((int)(p - line) - (int)compl_col < 0
 	    || ((int)(p - line) - (int)compl_col == 0
-		&& ctrl_x_mode != CTRL_X_OMNI) || ctrl_x_mode == CTRL_X_EVAL)
+		&& ctrl_x_mode != CTRL_X_OMNI) || ctrl_x_mode == CTRL_X_EVAL
+	    || (!can_bs(BS_START) && (int)(p - line) - (int)compl_col
+							- compl_length < 0))
 	return K_BS;
 
     /* Deleted more than what was used to find matches or didn't finish
@@ -3557,7 +3583,11 @@ ins_compl_addleader(int c)
 {
 #ifdef FEAT_MBYTE
     int		cc;
+#endif
 
+    if (stop_arrow() == FAIL)
+	return;
+#ifdef FEAT_MBYTE
     if (has_mbyte && (cc = (*mb_char2len)(c)) > 1)
     {
 	char_u	buf[MB_MAXBYTES + 1];
@@ -3875,7 +3905,7 @@ ins_compl_prep(int c)
 		if (prev_col > 0)
 		    dec_cursor();
 		/* only format when something was inserted */
-		if (!arrow_used && !ins_need_undo)
+		if (!arrow_used && !ins_need_undo && c != Ctrl_E)
 		    insertchar(NUL, 0, -1);
 		if (prev_col > 0
 			     && ml_get_curline()[curwin->w_cursor.col] != NUL)
@@ -5065,6 +5095,7 @@ ins_complete(int c, int enable_pum)
     int		n;
     int		save_w_wrow;
     int		insert_match;
+    int		save_did_ai = did_ai;
 
     compl_direction = ins_compl_key2dir(c);
     insert_match = ins_compl_use_match(c);
@@ -5348,6 +5379,8 @@ ins_complete(int c, int enable_pum)
 	    {
 		EMSG2(_(e_notset), ctrl_x_mode == CTRL_X_FUNCTION
 					     ? "completefunc" : "omnifunc");
+		/* restore did_ai, so that adding comment leader works */
+		did_ai = save_did_ai;
 		return FAIL;
 	    }
 
@@ -5431,7 +5464,7 @@ ins_complete(int c, int enable_pum)
 	}
 	else
 	{
-	    EMSG2(_(e_intern2), "ins_complete()");
+	    internal_error("ins_complete()");
 	    return FAIL;
 	}
 
@@ -6143,6 +6176,9 @@ insertchar(
 		&& (!has_mbyte || MB_BYTE2LEN_CHECK(c) == 1)
 #endif
 		&& i < INPUT_BUFLEN
+# ifdef FEAT_FKMAP
+		&& !(p_fkmap && KeyTyped) /* Farsi mode mapping moves cursor */
+# endif
 		&& (textwidth == 0
 		    || (virtcol += byte2cells(buf[i - 1])) < (colnr_T)textwidth)
 		&& !(!no_abbr && !vim_iswordc(c) && vim_iswordc(buf[i - 1])))
@@ -6151,10 +6187,6 @@ insertchar(
 	    c = vgetc();
 	    if (p_hkmap && KeyTyped)
 		c = hkmap(c);		    /* Hebrew mode mapping */
-# ifdef FEAT_FKMAP
-	    if (p_fkmap && KeyTyped)
-		c = fkmap(c);		    /* Farsi mode mapping */
-# endif
 	    buf[i++] = c;
 #else
 	    buf[i++] = vgetc();
@@ -8605,6 +8637,9 @@ ins_esc(
 #ifdef CURSOR_SHAPE
     ui_cursor_shape();		/* may show different cursor shape */
 #endif
+    if (!p_ek)
+	/* Re-enable bracketed paste mode. */
+	out_str(T_BE);
 
     /*
      * When recording or for CTRL-O, need to display the new mode.
@@ -9423,6 +9458,105 @@ ins_mousescroll(int dir)
     }
 }
 #endif
+
+/*
+ * Handle receiving P_PS: start paste mode.  Inserts the following text up to
+ * P_PE literally.
+ * When "drop" is TRUE then consume the text and drop it.
+ */
+    int
+bracketed_paste(paste_mode_T mode, int drop, garray_T *gap)
+{
+    int		c;
+    char_u	buf[NUMBUFLEN + MB_MAXBYTES];
+    int		idx = 0;
+    char_u	*end = find_termcode((char_u *)"PE");
+    int		ret_char = -1;
+    int		save_allow_keys = allow_keys;
+    int		save_paste = p_paste;
+    int		save_ai = curbuf->b_p_ai;
+
+    /* If the end code is too long we can't detect it, read everything. */
+    if (STRLEN(end) >= NUMBUFLEN)
+	end = NULL;
+    ++no_mapping;
+    allow_keys = 0;
+    p_paste = TRUE;
+    curbuf->b_p_ai = FALSE;
+
+    for (;;)
+    {
+	/* When the end is not defined read everything. */
+	if (end == NULL && vpeekc() == NUL)
+	    break;
+	c = plain_vgetc();
+#ifdef FEAT_MBYTE
+	if (has_mbyte)
+	    idx += (*mb_char2bytes)(c, buf + idx);
+	else
+#endif
+	    buf[idx++] = c;
+	buf[idx] = NUL;
+	if (end != NUL && STRNCMP(buf, end, idx) == 0)
+	{
+	    if (end[idx] == NUL)
+		break; /* Found the end of paste code. */
+	    continue;
+	}
+	if (!drop)
+	{
+	    switch (mode)
+	    {
+		case PASTE_CMDLINE:
+		    put_on_cmdline(buf, idx, TRUE);
+		    break;
+
+		case PASTE_EX:
+		    if (gap != NULL && ga_grow(gap, idx) == OK)
+		    {
+			mch_memmove((char *)gap->ga_data + gap->ga_len,
+							     buf, (size_t)idx);
+			gap->ga_len += idx;
+		    }
+		    break;
+
+		case PASTE_INSERT:
+		    if (stop_arrow() == OK)
+		    {
+			c = buf[0];
+			if (idx == 1 && (c == CAR || c == K_KENTER || c == NL))
+			    ins_eol(c);
+			else
+			{
+			    ins_char_bytes(buf, idx);
+			    AppendToRedobuffLit(buf, idx);
+			}
+		    }
+		    break;
+
+		case PASTE_ONE_CHAR:
+		    if (ret_char == -1)
+		    {
+#ifdef FEAT_MBYTE
+			if (has_mbyte)
+			    ret_char = (*mb_ptr2char)(buf);
+			else
+#endif
+			    ret_char = buf[0];
+		    }
+		    break;
+	    }
+	}
+	idx = 0;
+    }
+
+    --no_mapping;
+    allow_keys = save_allow_keys;
+    p_paste = save_paste;
+    curbuf->b_p_ai = save_ai;
+
+    return ret_char;
+}
 
 #if defined(FEAT_GUI_TABLINE) || defined(PROTO)
     static void

@@ -268,6 +268,11 @@
 # define UNUSED
 #endif
 
+/* Used to check for "sun", "__sun" is used by newer compilers. */
+#if defined(__sun)
+# define SUN_SYSTEM
+#endif
+
 /* if we're compiling in C++ (currently only KVim), the system
  * headers must have the correct prototypes or nothing will build.
  * conversely, our prototypes might clash due to throw() specifiers and
@@ -482,6 +487,9 @@ typedef unsigned long u8char_T;	    /* long should be 32 bits or more */
 # include <errno.h>
 #endif
 
+/* for INT_MAX et al. */
+#include <limits.h>
+
 /*
  * Allow other (non-unix) systems to configure themselves now
  * These are also in os_unix.h, because osdef.sh needs them there.
@@ -569,6 +577,7 @@ extern char *(*dyn_libintl_ngettext)(const char *msgid, const char *msgid_plural
 extern char *(*dyn_libintl_bindtextdomain)(const char *domainname, const char *dirname);
 extern char *(*dyn_libintl_bind_textdomain_codeset)(const char *domainname, const char *codeset);
 extern char *(*dyn_libintl_textdomain)(const char *domainname);
+extern int (*dyn_libintl_putenv)(const char *envstring);
 #endif
 
 
@@ -587,6 +596,8 @@ extern char *(*dyn_libintl_textdomain)(const char *domainname);
 #   define HAVE_BIND_TEXTDOMAIN_CODESET 1
 #  endif
 #  define textdomain(domain) (*dyn_libintl_textdomain)(domain)
+#  define libintl_putenv(envstring) (*dyn_libintl_putenv)(envstring)
+#  define libintl_wputenv(envstring) (*dyn_libintl_wputenv)(envstring)
 # else
 #  include <libintl.h>
 #  define _(x) gettext((char *)(x))
@@ -1623,6 +1634,9 @@ typedef UINT32_TYPEDEF UINT32_T;
 #define EMSG3(s, p, q)		    emsg3((char_u *)(s), (char_u *)(p), (char_u *)(q))
 #define EMSGN(s, n)		    emsgn((char_u *)(s), (long)(n))
 #define EMSGU(s, n)		    emsgu((char_u *)(s), (long_u)(n))
+#define IEMSG(s)		    iemsg((char_u *)(s))
+#define IEMSG2(s, p)		    iemsg2((char_u *)(s), (char_u *)(p))
+#define IEMSGN(s, n)		    iemsgn((char_u *)(s), (long)(n))
 #define OUT_STR(s)		    out_str((char_u *)(s))
 #define OUT_STR_NF(s)		    out_str_nf((char_u *)(s))
 #define MSG_PUTS(s)		    msg_puts((char_u *)(s))
@@ -1704,15 +1718,8 @@ typedef unsigned short disptick_T;	/* display tick type */
 
 typedef void	    *vim_acl_T;		/* dummy to pass an ACL to a function */
 
-/*
- * Include a prototype for mch_memmove(), it may not be in alloc.pro.
- */
-#ifdef VIM_MEMMOVE
-void mch_memmove(void *, void *, size_t);
-#else
-# ifndef mch_memmove
-#  define mch_memmove(to, from, len) memmove(to, from, len)
-# endif
+#ifndef mch_memmove
+# define mch_memmove(to, from, len) memmove((char*)(to), (char*)(from), (size_t)(len))
 #endif
 
 /*
@@ -1728,17 +1735,6 @@ void mch_memmove(void *, void *, size_t);
 # define vim_memset(ptr, c, size)   memset((ptr), (c), (size))
 #else
 void *vim_memset(void *, int, size_t);
-#endif
-
-#ifdef HAVE_MEMCMP
-# define vim_memcmp(p1, p2, len)   memcmp((p1), (p2), (len))
-#else
-# ifdef HAVE_BCMP
-#  define vim_memcmp(p1, p2, len)   bcmp((p1), (p2), (len))
-# else
-int vim_memcmp(void *, void *, size_t);
-#  define VIM_MEMCMP
-# endif
 #endif
 
 #if defined(UNIX) || defined(FEAT_GUI) || defined(VMS) \
@@ -2109,6 +2105,14 @@ typedef enum
     ASSERT_OTHER
 } assert_type_T;
 
+/* Mode for bracketed_paste(). */
+typedef enum {
+    PASTE_INSERT,	/* insert mode */
+    PASTE_CMDLINE,	/* command line */
+    PASTE_EX,		/* ex mode line */
+    PASTE_ONE_CHAR	/* return first character */
+} paste_mode_T;
+
 #include "ex_cmds.h"	    /* Ex command defines */
 #include "spell.h"	    /* spell checking stuff */
 
@@ -2473,10 +2477,12 @@ typedef enum
 #define TFN_QUIET	2	/* no error messages */
 #define TFN_NO_AUTOLOAD	4	/* do not use script autoloading */
 #define TFN_NO_DEREF	8	/* do not dereference a Funcref */
+#define TFN_READ_ONLY	16	/* will not change the var */
 
 /* Values for get_lval() flags argument: */
 #define GLV_QUIET	TFN_QUIET	/* no error messages */
 #define GLV_NO_AUTOLOAD	TFN_NO_AUTOLOAD	/* do not use script autoloading */
+#define GLV_READ_ONLY	TFN_READ_ONLY	/* will not change the var */
 
 #define DO_NOT_FREE_CNT 99999	/* refcount for dict or list that should not
 				   be freed. */
@@ -2495,9 +2501,25 @@ typedef enum
 #define FNE_INCL_BR	1	/* include [] in name */
 #define FNE_CHECK_START	2	/* check name starts with valid character */
 
-#if (defined(sun) || defined(__FreeBSD__) || defined(__FreeBSD_kernel__)) \
+#if (defined(SUN_SYSTEM) || defined(__FreeBSD__) || defined(__FreeBSD_kernel__)) \
 	&& defined(S_ISCHR)
 # define OPEN_CHR_FILES
+#endif
+
+#if defined(HAVE_GETTIMEOFDAY) && defined(HAVE_SYS_TIME_H)
+# define ELAPSED_TIMEVAL
+# define ELAPSED_INIT(v) gettimeofday(&v, NULL)
+# define ELAPSED_FUNC(v) elapsed(&v)
+# define ELAPSED_TYPE struct timeval
+    long elapsed(struct timeval *start_tv);
+#else
+# if defined(WIN32)
+#  define ELAPSED_TICKCOUNT
+#  define ELAPSED_INIT(v) v = GetTickCount()
+#  define ELAPSED_FUNC(v) elapsed(v)
+#  define ELAPSED_TYPE DWORD
+    long elapsed(DWORD start_tick);
+# endif
 #endif
 
 #endif /* VIM__H */

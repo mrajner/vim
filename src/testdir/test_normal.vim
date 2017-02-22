@@ -35,8 +35,20 @@ func! CountSpaces(type, ...)
   let @@ = reg_save
 endfunc
 
-func! IsWindows()
-  return has("win32") || has("win64") || has("win95")
+func! OpfuncDummy(type, ...)
+  " for testing operatorfunc
+  let g:opt=&linebreak
+
+  if a:0  " Invoked from Visual mode, use gv command.
+    silent exe "normal! gvy"
+  elseif a:type == 'line'
+    silent exe "normal! '[V']y"
+  else
+    silent exe "normal! `[v`]y"
+  endif
+  " Create a new dummy window
+  new
+  let g:bufnr=bufnr('%')
 endfunc
 
 fun! Test_normal00_optrans()
@@ -147,7 +159,7 @@ endfunc
 func! Test_normal04_filter()
   " basic filter test
   " only test on non windows platform
-  if IsWindows()
+  if has('win32')
     return
   endif
   call Setup_NewWindow()
@@ -210,23 +222,35 @@ endfunc
 func! Test_normal06_formatprg()
   " basic test for formatprg
   " only test on non windows platform
-  if IsWindows()
+  if has('win32')
     return
-  else
-    " uses sed to number non-empty lines
-    call writefile(['#!/bin/sh', 'sed ''/./=''|sed ''/./{', 'N', 's/\n/    /', '}'''], 'Xsed_format.sh')
-    call system('chmod +x ./Xsed_format.sh')
   endif
-  call Setup_NewWindow()
-  %d
-  call setline(1, ['a', '', 'c', '', ' ', 'd', 'e'])
+
+  " uses sed to number non-empty lines
+  call writefile(['#!/bin/sh', 'sed ''/./=''|sed ''/./{', 'N', 's/\n/    /', '}'''], 'Xsed_format.sh')
+  call system('chmod +x ./Xsed_format.sh')
+  let text = ['a', '', 'c', '', ' ', 'd', 'e']
+  let expected = ['1    a', '', '3    c', '', '5     ', '6    d', '7    e']
+
+  10new
+  call setline(1, text)
   set formatprg=./Xsed_format.sh
   norm! gggqG
-  call assert_equal(['1    a', '', '3    c', '', '5     ', '6    d', '7    e'], getline(1, '$'))
+  call assert_equal(expected, getline(1, '$'))
+  bw!
+
+  10new
+  call setline(1, text)
+  set formatprg=donothing
+  setlocal formatprg=./Xsed_format.sh
+  norm! gggqG
+  call assert_equal(expected, getline(1, '$'))
+  bw!
+
   " clean up
   set formatprg=
+  setlocal formatprg=
   call delete('Xsed_format.sh')
-  bw!
 endfunc
 
 func! Test_normal07_internalfmt()
@@ -239,7 +263,7 @@ func! Test_normal07_internalfmt()
   norm! gggqG
   call assert_equal(['1    2    3', '4    5    6', '7    8    9', '10    11    '], getline(1, '$'))
   " clean up
-  set formatprg= tw=0
+  set tw=0
   bw!
 endfunc
 
@@ -328,7 +352,34 @@ func! Test_normal09_operatorfunc()
   " clean up
   unmap <buffer> ,,
   set opfunc=
+  unlet! g:a
   bw!
+endfunc
+
+func! Test_normal09a_operatorfunc()
+  " Test operatorfunc
+  call Setup_NewWindow()
+  " Add some spaces for counting
+  50,60s/$/  /
+  unlet! g:opt
+  set linebreak
+  nmap <buffer><silent> ,, :set opfunc=OpfuncDummy<CR>g@
+  50
+  norm ,,j
+  exe "bd!" g:bufnr
+  call assert_true(&linebreak)
+  call assert_equal(g:opt, &linebreak)
+  set nolinebreak
+  norm ,,j
+  exe "bd!" g:bufnr
+  call assert_false(&linebreak)
+  call assert_equal(g:opt, &linebreak)
+
+  " clean up
+  unmap <buffer> ,,
+  set opfunc=
+  bw!
+  unlet! g:opt
 endfunc
 
 func! Test_normal10_expand()
@@ -1222,7 +1273,7 @@ endfunc
 func! Test_normal23_K()
   " Test for K command
   new
-  call append(0, ['version8.txt', 'man'])
+  call append(0, ['version8.txt', 'man', 'aa%bb', 'cc|dd'])
   let k = &keywordprg
   set keywordprg=:help
   1
@@ -1236,6 +1287,26 @@ func! Test_normal23_K()
   call assert_equal('help', &ft)
   call assert_match('\*version8\.0\*', getline('.'))
   helpclose
+
+  set keywordprg=:new
+  set iskeyword+=%
+  set iskeyword+=\|
+  2
+  norm! K
+  call assert_equal('man', fnamemodify(bufname('%'), ':t'))
+  bwipe!
+  3
+  norm! K
+  call assert_equal('aa%bb', fnamemodify(bufname('%'), ':t'))
+  bwipe!
+  if !has('win32')
+    4
+    norm! K
+    call assert_equal('cc|dd', fnamemodify(bufname('%'), ':t'))
+    bwipe!
+  endif
+  set iskeyword-=%
+  set iskeyword-=\|
 
   " Only expect "man" to work on Unix
   if !has("unix")
@@ -2122,6 +2193,8 @@ func! Test_normal51_FileChangedRO()
   if !has("autocmd")
     return
   endif
+  " Don't sleep after the warning message.
+  call test_settime(1)
   call writefile(['foo'], 'Xreadonly.log')
   new Xreadonly.log
   setl ro
@@ -2131,6 +2204,7 @@ func! Test_normal51_FileChangedRO()
   call assert_equal('Xreadonly.log', bufname(''))
 
   " cleanup
+  call test_settime(0)
   bw!
   call delete("Xreadonly.log")
 endfunc

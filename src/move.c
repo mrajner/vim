@@ -2311,7 +2311,7 @@ onepage(int dir, long count)
 #endif
 	if (dir == FORWARD)
 	{
-	    if (firstwin == lastwin && p_window > 0 && p_window < Rows - 1)
+	    if (ONE_WINDOW && p_window > 0 && p_window < Rows - 1)
 	    {
 		/* Vi compatible scrolling */
 		if (p_window <= 2)
@@ -2361,7 +2361,7 @@ onepage(int dir, long count)
 		continue;
 	    }
 #endif
-	    if (firstwin == lastwin && p_window > 0 && p_window < Rows - 1)
+	    if (ONE_WINDOW && p_window > 0 && p_window < Rows - 1)
 	    {
 		/* Vi compatible scrolling (sort of) */
 		if (p_window <= 2)
@@ -2841,6 +2841,10 @@ do_check_cursorbind(void)
 	    restart_edit_save = restart_edit;
 	    restart_edit = TRUE;
 	    check_cursor();
+# ifdef FEAT_SYN_HL
+	    if (curwin->w_p_cul || curwin->w_p_cuc)
+		validate_cursor();
+# endif
 	    restart_edit = restart_edit_save;
 # ifdef FEAT_MBYTE
 	    /* Correct cursor for multi-byte character. */

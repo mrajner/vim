@@ -1,4 +1,4 @@
-dnl configure.in: autoconf script for Vim
+dnl configure.ac: autoconf script for Vim
 
 dnl Process this file with autoconf 2.12 or 2.13 to produce "configure".
 dnl Should also work with autoconf 2.54 and later.
@@ -1995,7 +1995,7 @@ if test "$enable_channel" = "yes"; then
 	/* Check bitfields */
 	struct nbbuf {
 	unsigned int  initDone:1;
-	ushort signmaplen;
+	unsigned short signmaplen;
 	};
 	    ], [
 		/* Check creating a socket. */
@@ -3594,8 +3594,8 @@ fi
 
 dnl Check for functions in one big call, to reduce the size of configure.
 dnl Can only be used for functions that do not require any include.
-AC_CHECK_FUNCS(bcmp fchdir fchown fsync getcwd getpseudotty \
-	getpwent getpwnam getpwuid getrlimit gettimeofday getwd lstat memcmp \
+AC_CHECK_FUNCS(fchdir fchown fsync getcwd getpseudotty \
+	getpwent getpwnam getpwuid getrlimit gettimeofday getwd lstat \
 	memset mkdtemp nanosleep opendir putenv qsort readlink select setenv \
 	setpgid setsid sigaltstack sigstack sigset sigsetjmp sigaction \
 	sigprocmask sigvec strcasecmp strerror strftime stricmp strncasecmp \

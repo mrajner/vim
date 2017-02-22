@@ -113,16 +113,19 @@ read_buffer(
 	 * it can be changed there. */
 	if (!readonlymode && !bufempty())
 	    changed();
-	else if (retval != FAIL)
+	else if (retval == OK)
 	    unchanged(curbuf, FALSE);
 
 #ifdef FEAT_AUTOCMD
+	if (retval == OK)
+	{
 # ifdef FEAT_EVAL
-	apply_autocmds_retval(EVENT_STDINREADPOST, NULL, NULL, FALSE,
+	    apply_autocmds_retval(EVENT_STDINREADPOST, NULL, NULL, FALSE,
 							curbuf, &retval);
 # else
-	apply_autocmds(EVENT_STDINREADPOST, NULL, NULL, FALSE, curbuf);
+	    apply_autocmds(EVENT_STDINREADPOST, NULL, NULL, FALSE, curbuf);
 # endif
+	}
 #endif
     }
     return retval;
@@ -294,7 +297,7 @@ open_buffer(
 #endif
        )
 	changed();
-    else if (retval != FAIL && !read_stdin && !read_fifo)
+    else if (retval == OK && !read_stdin && !read_fifo)
 	unchanged(curbuf, FALSE);
     save_file_ff(curbuf);		/* keep this fileformat */
 
@@ -328,7 +331,7 @@ open_buffer(
 # endif
 #endif
 
-    if (retval != FAIL)
+    if (retval == OK)
     {
 #ifdef FEAT_AUTOCMD
 	/*
@@ -829,6 +832,7 @@ free_buffer(buf_T *buf)
     free_buffer_stuff(buf, TRUE);
 #ifdef FEAT_EVAL
     unref_var_dict(buf->b_vars);
+    buf->b_changedtick = &buf->b_ct_val;
 #endif
 #ifdef FEAT_LUA
     lua_buffer_free(buf);
@@ -870,6 +874,34 @@ free_buffer(buf_T *buf)
 }
 
 /*
+ * Initializes buf->b_changedtick.
+ */
+    static void
+init_changedtick(buf_T *buf)
+{
+#ifdef FEAT_EVAL
+    dictitem_T *di = dictitem_alloc((char_u *)"changedtick");
+
+    if (di != NULL)
+    {
+	di->di_flags |= DI_FLAGS_FIX | DI_FLAGS_RO;
+	di->di_tv.v_type = VAR_NUMBER;
+	di->di_tv.v_lock = VAR_FIXED;
+	di->di_tv.vval.v_number = 0;
+	if (dict_add(buf->b_vars, di) == OK)
+	    buf->b_changedtick = &di->di_tv.vval.v_number;
+	else
+	{
+	    vim_free(di);
+	    buf->b_changedtick = &buf->b_ct_val;
+	}
+    }
+    else
+#endif
+	buf->b_changedtick = &buf->b_ct_val;
+}
+
+/*
  * Free stuff in the buffer for ":bdel" and when wiping out the buffer.
  */
     static void
@@ -886,8 +918,14 @@ free_buffer_stuff(
 #endif
     }
 #ifdef FEAT_EVAL
-    vars_clear(&buf->b_vars->dv_hashtab); /* free all internal variables */
-    hash_init(&buf->b_vars->dv_hashtab);
+    {
+	varnumber_T tick = *buf->b_changedtick;
+
+	vars_clear(&buf->b_vars->dv_hashtab); /* free all buffer variables */
+	hash_init(&buf->b_vars->dv_hashtab);
+	init_changedtick(buf);
+	*buf->b_changedtick = tick;
+    }
 #endif
 #ifdef FEAT_USR_CMDS
     uc_clear(&buf->b_ucmds);		/* clear local user commands */
@@ -1412,7 +1450,7 @@ do_buffer(
 # ifdef FEAT_AUTOCMD
 		   && !(curwin->w_closing || curwin->w_buffer->b_locked > 0)
 # endif
-		   && (firstwin != lastwin || first_tabpage->tp_next != NULL))
+		   && (!ONE_WINDOW || first_tabpage->tp_next != NULL))
 	{
 	    if (win_close(curwin, FALSE) == FAIL)
 		break;
@@ -1976,6 +2014,7 @@ buflist_new(
 	}
 	init_var_dict(buf->b_vars, &buf->b_bufvar, VAR_SCOPE);
 #endif
+	init_changedtick(buf);
     }
 
     if (ffname != NULL)
@@ -2150,6 +2189,7 @@ free_buf_options(
 #if defined(FEAT_CRYPT)
     clear_string_option(&buf->b_p_cm);
 #endif
+    clear_string_option(&buf->b_p_fp);
 #if defined(FEAT_EVAL)
     clear_string_option(&buf->b_p_fex);
 #endif
@@ -4858,8 +4898,8 @@ do_arg_all(
 	    wpnext = wp->w_next;
 	    buf = wp->w_buffer;
 	    if (buf->b_ffname == NULL
-		    || (!keep_tabs && buf->b_nwindows > 1)
-		    || wp->w_width != Columns)
+		    || (!keep_tabs && (buf->b_nwindows > 1
+			    || wp->w_width != Columns)))
 		i = opened_len;
 	    else
 	    {
@@ -4935,7 +4975,7 @@ do_arg_all(
 		    }
 #ifdef FEAT_WINDOWS
 		    /* don't close last window */
-		    if (firstwin == lastwin
+		    if (ONE_WINDOW
 			    && (first_tabpage->tp_next == NULL || !had_tab))
 #endif
 			use_firstwin = TRUE;
@@ -5140,7 +5180,7 @@ ex_buffer_all(exarg_T *eap)
 			: wp->w_width != Columns)
 		    || (had_tab > 0 && wp != firstwin)
 #endif
-		    ) && firstwin != lastwin
+		    ) && !ONE_WINDOW
 #ifdef FEAT_AUTOCMD
 		    && !(wp->w_closing || wp->w_buffer->b_locked > 0)
 #endif
