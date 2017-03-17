@@ -231,7 +231,7 @@ serverRegisterName(
 	    if (res < -1 || i >= 1000)
 	    {
 		MSG_ATTR(_("Unable to register a command server name"),
-							      hl_attr(HLF_W));
+							      HL_ATTR(HLF_W));
 		return FAIL;
 	    }
 	    if (p == NULL)
@@ -1449,8 +1449,8 @@ server_parse_message(
 	    char_u	*enc;
 
 	    /*
-	     * This is a (n)otification.  Sent with serverreply_send in VimL.
-	     * Execute any autocommand and save it for later retrieval
+	     * This is a (n)otification.  Sent with serverreply_send in Vim
+	     * script.  Execute any autocommand and save it for later retrieval
 	     */
 	    p += 2;
 	    gotWindow = 0;
