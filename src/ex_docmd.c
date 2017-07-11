@@ -488,46 +488,16 @@ static void	ex_folddo(exarg_T *eap);
 #ifndef FEAT_PROFILE
 # define ex_profile		ex_ni
 #endif
+#ifndef FEAT_TERMINAL
+# define ex_terminal		ex_ni
+#endif
 
 /*
  * Declare cmdnames[].
  */
 #define DO_DECLARE_EXCMD
 #include "ex_cmds.h"
-
-/*
- * Table used to quickly search for a command, based on its first character.
- */
-static cmdidx_T cmdidxs[27] =
-{
-	CMD_append,
-	CMD_buffer,
-	CMD_change,
-	CMD_delete,
-	CMD_edit,
-	CMD_file,
-	CMD_global,
-	CMD_help,
-	CMD_insert,
-	CMD_join,
-	CMD_k,
-	CMD_list,
-	CMD_move,
-	CMD_next,
-	CMD_open,
-	CMD_print,
-	CMD_quit,
-	CMD_read,
-	CMD_substitute,
-	CMD_t,
-	CMD_undo,
-	CMD_vglobal,
-	CMD_write,
-	CMD_xit,
-	CMD_yank,
-	CMD_z,
-	CMD_bang
-};
+#include "ex_cmdidxs.h"
 
 static char_u dollar_command[2] = {'$', 0};
 
@@ -613,7 +583,6 @@ restore_dbg_stuff(struct dbg_stuff *dsp)
     current_exception = dsp->current_exception;
 }
 #endif
-
 
 /*
  * do_exmode(): Repeatedly get commands for the "Ex" mode, until the ":vi"
@@ -2404,7 +2373,8 @@ do_one_cmd(
 	goto doend;
     }
     /* Check for wrong commands. */
-    if (*p == '!' && ea.cmd[1] == 0151 && ea.cmd[0] == 78)
+    if (*p == '!' && ea.cmd[1] == 0151 && ea.cmd[0] == 78
+	    && !IS_USER_CMDIDX(ea.cmdidx))
     {
 	errormsg = uc_fun_cmd();
 	goto doend;
@@ -3006,7 +2976,10 @@ do_one_cmd(
 
 doend:
     if (curwin->w_cursor.lnum == 0)	/* can happen with zero line number */
+    {
 	curwin->w_cursor.lnum = 1;
+	curwin->w_cursor.col = 0;
+    }
 
     if (errormsg != NULL && *errormsg != NUL && !did_emsg)
     {
@@ -3208,10 +3181,25 @@ find_command(exarg_T *eap, int *full UNUSED)
 	    }
 	}
 
-	if (ASCII_ISLOWER(*eap->cmd))
-	    eap->cmdidx = cmdidxs[CharOrdLow(*eap->cmd)];
+	if (ASCII_ISLOWER(eap->cmd[0]))
+	{
+	    int c1 = eap->cmd[0];
+	    int c2 = eap->cmd[1];
+
+	    if (command_count != (int)CMD_SIZE)
+	    {
+		iemsg((char_u *)_("E943: Command table needs to be updated, run 'make cmdidxs'"));
+		getout(1);
+	    }
+
+	    /* Use a precomputed index for fast look-up in cmdnames[]
+	     * taking into account the first 2 letters of eap->cmd. */
+	    eap->cmdidx = cmdidxs1[CharOrdLow(c1)];
+	    if (ASCII_ISLOWER(c2))
+		eap->cmdidx += cmdidxs2[CharOrdLow(c1)][CharOrdLow(c2)];
+	}
 	else
-	    eap->cmdidx = cmdidxs[26];
+	    eap->cmdidx = CMD_bang;
 
 	for ( ; (int)eap->cmdidx < (int)CMD_SIZE;
 			       eap->cmdidx = (cmdidx_T)((int)eap->cmdidx + 1))
@@ -4572,7 +4560,7 @@ get_address(
 			curwin->w_cursor.col = 0;
 		    searchcmdlen = 0;
 		    if (!do_search(NULL, c, cmd, 1L,
-				       SEARCH_HIS | SEARCH_MSG, NULL))
+					  SEARCH_HIS | SEARCH_MSG, NULL, NULL))
 		    {
 			curwin->w_cursor = pos;
 			cmd = NULL;
@@ -4629,7 +4617,7 @@ get_address(
 		    if (searchit(curwin, curbuf, &pos,
 				*cmd == '?' ? BACKWARD : FORWARD,
 				(char_u *)"", 1L, SEARCH_MSG,
-					i, (linenr_T)0, NULL) != FAIL)
+					i, (linenr_T)0, NULL, NULL) != FAIL)
 			lnum = pos.lnum;
 		    else
 		    {
@@ -5058,6 +5046,7 @@ expand_filename(
 		&& eap->cmdidx != CMD_lgrep
 		&& eap->cmdidx != CMD_grepadd
 		&& eap->cmdidx != CMD_lgrepadd
+		&& eap->cmdidx != CMD_hardcopy
 #ifndef UNIX
 		&& !(eap->argt & NOSPC)
 #endif
@@ -7282,8 +7271,11 @@ ex_quit(exarg_T *eap)
     apply_autocmds(EVENT_QUITPRE, NULL, NULL, FALSE, curbuf);
     /* Refuse to quit when locked or when the buffer in the last window is
      * being closed (can only happen in autocommands). */
-    if (curbuf_locked() || (wp->w_buffer->b_nwindows == 1
-						&& wp->w_buffer->b_locked > 0))
+    if (curbuf_locked()
+# ifdef FEAT_WINDOWS
+	    || !win_valid(wp)
+# endif
+	    || (wp->w_buffer->b_nwindows == 1 && wp->w_buffer->b_locked > 0))
 	return;
 #endif
 
@@ -10306,6 +10298,7 @@ ex_normal(exarg_T *eap)
 	    {
 		curwin->w_cursor.lnum = eap->line1++;
 		curwin->w_cursor.col = 0;
+		check_cursor_moved(curwin);
 	    }
 
 	    exec_normal_cmd(
@@ -10905,6 +10898,9 @@ eval_vars(
 		result = strbuf;
 		break;
 #endif
+	default:
+		result = (char_u *)""; /* avoid gcc warning */
+		break;
 	}
 
 	resultlen = (int)STRLEN(result);	/* length of new string */
@@ -12184,13 +12180,22 @@ ex_filetype(exarg_T *eap)
 }
 
 /*
- * ":setfiletype {name}"
+ * ":setfiletype [FALLBACK] {name}"
  */
     static void
 ex_setfiletype(exarg_T *eap)
 {
     if (!did_filetype)
-	set_option_value((char_u *)"filetype", 0L, eap->arg, OPT_LOCAL);
+    {
+	char_u *arg = eap->arg;
+
+	if (STRNCMP(arg, "FALLBACK ", 9) == 0)
+	    arg += 9;
+
+	set_option_value((char_u *)"filetype", 0L, arg, OPT_LOCAL);
+	if (arg != eap->arg)
+	    did_filetype = FALSE;
+    }
 }
 #endif
 

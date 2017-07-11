@@ -460,8 +460,8 @@ func Test_getbufvar()
   let bd = getbufvar(bnr, '',def_num)
   call assert_equal(1, len(bd))
 
-  call assert_equal('', getbufvar(9, ''))
-  call assert_equal(def_num, getbufvar(9, '', def_num))
+  call assert_equal('', getbufvar(9999, ''))
+  call assert_equal(def_num, getbufvar(9999, '', def_num))
   unlet def_num
 
   call assert_equal(0, getbufvar(bnr, '&autoindent'))
@@ -724,4 +724,88 @@ func Test_balloon_show()
     " This won't do anything but must not crash either.
     call balloon_show('hi!')
   endif
+endfunc
+
+func Test_setbufvar_options()
+  " This tests that aucmd_prepbuf() and aucmd_restbuf() properly restore the
+  " window layout.
+  call assert_equal(1, winnr('$'))
+  split dummy_preview
+  resize 2
+  set winfixheight winfixwidth
+  let prev_id = win_getid()
+
+  wincmd j
+  let wh = winheight('.')
+  let dummy_buf = bufnr('dummy_buf1', v:true)
+  call setbufvar(dummy_buf, '&buftype', 'nofile')
+  execute 'belowright vertical split #' . dummy_buf
+  call assert_equal(wh, winheight('.'))
+  let dum1_id = win_getid()
+
+  wincmd h
+  let wh = winheight('.')
+  let dummy_buf = bufnr('dummy_buf2', v:true)
+  call setbufvar(dummy_buf, '&buftype', 'nofile')
+  execute 'belowright vertical split #' . dummy_buf
+  call assert_equal(wh, winheight('.'))
+
+  bwipe!
+  call win_gotoid(prev_id)
+  bwipe!
+  call win_gotoid(dum1_id)
+  bwipe!
+endfunc
+
+func Test_redo_in_nested_functions()
+  nnoremap g. :set opfunc=Operator<CR>g@
+  function Operator( type, ... )
+     let @x = 'XXX'
+     execute 'normal! g`[' . (a:type ==# 'line' ? 'V' : 'v') . 'g`]' . '"xp'
+  endfunction
+
+  function! Apply()
+      5,6normal! .
+  endfunction
+
+  new
+  call setline(1, repeat(['some "quoted" text', 'more "quoted" text'], 3))
+  1normal g.i"
+  call assert_equal('some "XXX" text', getline(1))
+  3,4normal .
+  call assert_equal('some "XXX" text', getline(3))
+  call assert_equal('more "XXX" text', getline(4))
+  call Apply()
+  call assert_equal('some "XXX" text', getline(5))
+  call assert_equal('more "XXX" text', getline(6))
+  bwipe!
+
+  nunmap g.
+  delfunc Operator
+  delfunc Apply
+endfunc
+
+func Test_shellescape()
+  let save_shell = &shell
+  set shell=bash
+  call assert_equal("'text'", shellescape('text'))
+  call assert_equal("'te\"xt'", shellescape('te"xt'))
+  call assert_equal("'te'\\''xt'", shellescape("te'xt"))
+
+  call assert_equal("'te%xt'", shellescape("te%xt"))
+  call assert_equal("'te\\%xt'", shellescape("te%xt", 1))
+  call assert_equal("'te#xt'", shellescape("te#xt"))
+  call assert_equal("'te\\#xt'", shellescape("te#xt", 1))
+  call assert_equal("'te!xt'", shellescape("te!xt"))
+  call assert_equal("'te\\!xt'", shellescape("te!xt", 1))
+
+  call assert_equal("'te\nxt'", shellescape("te\nxt"))
+  call assert_equal("'te\\\nxt'", shellescape("te\nxt", 1))
+  set shell=tcsh
+  call assert_equal("'te\\!xt'", shellescape("te!xt"))
+  call assert_equal("'te\\\\!xt'", shellescape("te!xt", 1))
+  call assert_equal("'te\\\nxt'", shellescape("te\nxt"))
+  call assert_equal("'te\\\\\nxt'", shellescape("te\nxt", 1))
+
+  let &shell = save_shell
 endfunc

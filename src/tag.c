@@ -2355,18 +2355,19 @@ parse_line:
 		}
 		else
 		{
-#define TAG_SEP 0x01
+#define TAG_SEP 0x02
 		    size_t tag_fname_len = STRLEN(tag_fname);
 #ifdef FEAT_EMACS_TAGS
 		    size_t ebuf_len = 0;
 #endif
 
 		    /* Save the tag in a buffer.
-		     * Use 0x01 to separate fields (Can't use NUL, because the
-		     * hash key is terminated by NUL).
-		     * Emacs tag: <mtt><tag_fname><0x01><ebuf><0x01><lbuf><NUL>
-		     * other tag: <mtt><tag_fname><0x01><0x01><lbuf><NUL>
-		     * without Emacs tags: <mtt><tag_fname><0x01><lbuf><NUL>
+		     * Use 0x02 to separate fields (Can't use NUL because the
+		     * hash key is terminated by NUL, or Ctrl_A because that is
+		     * part of some Emacs tag files -- see parse_tag_line).
+		     * Emacs tag: <mtt><tag_fname><0x02><ebuf><0x02><lbuf><NUL>
+		     * other tag: <mtt><tag_fname><0x02><0x02><lbuf><NUL>
+		     * without Emacs tags: <mtt><tag_fname><0x02><lbuf><NUL>
 		     * Here <mtt> is the "mtt" value plus 1 to avoid NUL.
 		     */
 		    len = (int)tag_fname_len + (int)STRLEN(lbuf) + 3;
@@ -3087,7 +3088,7 @@ jumpto_tag(
     char_u	*fname;
     tagptrs_T	tagp;
     int		retval = FAIL;
-    int		getfile_result;
+    int		getfile_result = GETFILE_UNUSED;
     int		search_options;
 #ifdef FEAT_SEARCH_EXTRA
     int		save_no_hlsearch;
@@ -3201,10 +3202,36 @@ jumpto_tag(
 
     /* If it was a CTRL-W CTRL-] command split window now.  For ":tab tag"
      * open a new tab page. */
-    if (postponed_split || cmdmod.tab != 0)
+    if (postponed_split && (swb_flags & (SWB_USEOPEN | SWB_USETAB)))
     {
-	win_split(postponed_split > 0 ? postponed_split : 0,
-						       postponed_split_flags);
+	buf_T *existing_buf = buflist_findname_exp(fname);
+
+	if (existing_buf != NULL)
+	{
+	    win_T *wp = NULL;
+
+	    if (swb_flags & SWB_USEOPEN)
+		wp = buf_jump_open_win(existing_buf);
+
+	    /* If 'switchbuf' contains "usetab": jump to first window in any tab
+	     * page containing "existing_buf" if one exists */
+	    if (wp == NULL && (swb_flags & SWB_USETAB))
+		wp = buf_jump_open_tab(existing_buf);
+	    /* We've switched to the buffer, the usual loading of the file must
+	     * be skipped. */
+	    if (wp != NULL)
+		getfile_result = GETFILE_SAME_FILE;
+	}
+    }
+    if (getfile_result == GETFILE_UNUSED
+				       && (postponed_split || cmdmod.tab != 0))
+    {
+	if (win_split(postponed_split > 0 ? postponed_split : 0,
+						postponed_split_flags) == FAIL)
+	{
+	    --RedrawingDisabled;
+	    goto erret;
+	}
 	RESET_BINDING(curwin);
     }
 #endif
@@ -3220,10 +3247,11 @@ jumpto_tag(
 #endif
 	    keep_help_flag = curbuf->b_help;
     }
-    getfile_result = getfile(0, fname, NULL, TRUE, (linenr_T)0, forceit);
+    if (getfile_result == GETFILE_UNUSED)
+	getfile_result = getfile(0, fname, NULL, TRUE, (linenr_T)0, forceit);
     keep_help_flag = FALSE;
 
-    if (getfile_result <= 0)		/* got to the right file */
+    if (GETFILE_SUCCESS(getfile_result))	/* got to the right file */
     {
 	curwin->w_set_curswant = TRUE;
 #ifdef FEAT_WINDOWS
@@ -3280,7 +3308,7 @@ jumpto_tag(
 	    save_lnum = curwin->w_cursor.lnum;
 	    curwin->w_cursor.lnum = 0;	/* start search before first line */
 	    if (do_search(NULL, pbuf[0], pbuf + 1, (long)1,
-							search_options, NULL))
+						   search_options, NULL, NULL))
 		retval = OK;
 	    else
 	    {
@@ -3292,7 +3320,7 @@ jumpto_tag(
 		 */
 		p_ic = TRUE;
 		if (!do_search(NULL, pbuf[0], pbuf + 1, (long)1,
-							search_options, NULL))
+						   search_options, NULL, NULL))
 		{
 		    /*
 		     * Failed to find pattern, take a guess: "^func  ("
@@ -3303,13 +3331,13 @@ jumpto_tag(
 		    *tagp.tagname_end = NUL;
 		    sprintf((char *)pbuf, "^%s\\s\\*(", tagp.tagname);
 		    if (!do_search(NULL, '/', pbuf, (long)1,
-							search_options, NULL))
+						   search_options, NULL, NULL))
 		    {
 			/* Guess again: "^char * \<func  (" */
 			sprintf((char *)pbuf, "^\\[#a-zA-Z_]\\.\\*\\<%s\\s\\*(",
 								tagp.tagname);
 			if (!do_search(NULL, '/', pbuf, (long)1,
-							search_options, NULL))
+						   search_options, NULL, NULL))
 			    found = 0;
 		    }
 		    *tagp.tagname_end = cc;
@@ -3372,7 +3400,7 @@ jumpto_tag(
 #endif
 
 	/* Return OK if jumped to another file (at least we found the file!). */
-	if (getfile_result == -1)
+	if (getfile_result == GETFILE_OPEN_OTHER)
 	    retval = OK;
 
 	if (retval == OK)
@@ -3876,11 +3904,11 @@ add_tag_field(
 }
 
 /*
- * Add the tags matching the specified pattern to the list "list"
- * as a dictionary
+ * Add the tags matching the specified pattern "pat" to the list "list"
+ * as a dictionary. Use "buf_fname" for priority, unless NULL.
  */
     int
-get_tags(list_T *list, char_u *pat)
+get_tags(list_T *list, char_u *pat, char_u *buf_fname)
 {
     int		num_matches, i, ret;
     char_u	**matches, *p;
@@ -3890,7 +3918,7 @@ get_tags(list_T *list, char_u *pat)
     long	is_static;
 
     ret = find_tags(pat, &num_matches, &matches,
-				    TAG_REGEXP | TAG_NOIC, (int)MAXCOL, NULL);
+				TAG_REGEXP | TAG_NOIC, (int)MAXCOL, buf_fname);
     if (ret == OK && num_matches > 0)
     {
 	for (i = 0; i < num_matches; ++i)

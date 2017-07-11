@@ -4665,9 +4665,7 @@ eval_index(
 			item = item->li_next;
 		    }
 		    clear_tv(rettv);
-		    rettv->v_type = VAR_LIST;
-		    rettv->vval.v_list = l;
-		    ++l->lv_refcount;
+		    rettv_list_set(rettv, l);
 		}
 		else
 		{
@@ -5325,6 +5323,10 @@ garbage_collect(int testing)
 
 #ifdef FEAT_TIMERS
     abort = abort || set_ref_in_timer(copyID);
+#endif
+
+#ifdef FEAT_QUICKFIX
+    abort = abort || set_ref_in_quickfix(copyID);
 #endif
 
     if (!abort)
@@ -6120,13 +6122,16 @@ var2fpos(
 	if (name[1] == '0')		/* "w0": first visible line */
 	{
 	    update_topline();
-	    pos.lnum = curwin->w_topline;
+	    /* In silent Ex mode topline is zero, but that's not a valid line
+	     * number; use one instead. */
+	    pos.lnum = curwin->w_topline > 0 ? curwin->w_topline : 1;
 	    return &pos;
 	}
 	else if (name[1] == '$')	/* "w$": last visible line */
 	{
 	    validate_botline();
-	    pos.lnum = curwin->w_botline - 1;
+	    /* In silent Ex mode botline is zero, return zero then. */
+	    pos.lnum = curwin->w_botline > 0 ? curwin->w_botline - 1 : 0;
 	    return &pos;
 	}
     }
@@ -8325,7 +8330,6 @@ ex_execute(exarg_T *eap)
 	     * follows is displayed on a new line when scrolling back at the
 	     * more prompt. */
 	    msg_sb_eol();
-	    msg_start();
 	}
 
 	if (eap->cmdidx == CMD_echomsg)
@@ -8480,9 +8484,7 @@ getwinvar(
 
 		    if (opts != NULL)
 		    {
-			rettv->v_type = VAR_DICT;
-			rettv->vval.v_dict = opts;
-			++opts->dv_refcount;
+			rettv_dict_set(rettv, opts);
 			done = TRUE;
 		    }
 		}
@@ -9081,6 +9083,17 @@ assert_bool(typval_T *argvars, int isTrue)
 	assert_error(&ga);
 	ga_clear(&ga);
     }
+}
+
+    void
+assert_report(typval_T *argvars)
+{
+    garray_T	ga;
+
+    prepare_assert_error(&ga);
+    ga_concat(&ga, get_tv_string(&argvars[0]));
+    assert_error(&ga);
+    ga_clear(&ga);
 }
 
     void

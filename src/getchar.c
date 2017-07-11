@@ -42,10 +42,6 @@
 
 static buffheader_T redobuff = {{NULL, {NUL}}, NULL, 0, 0};
 static buffheader_T old_redobuff = {{NULL, {NUL}}, NULL, 0, 0};
-#if defined(FEAT_AUTOCMD) || defined(FEAT_EVAL) || defined(PROTO)
-static buffheader_T save_redobuff = {{NULL, {NUL}}, NULL, 0, 0};
-static buffheader_T save_old_redobuff = {{NULL, {NUL}}, NULL, 0, 0};
-#endif
 static buffheader_T recordbuff = {{NULL, {NUL}}, NULL, 0, 0};
 
 static int typeahead_char = 0;		/* typeahead char that's not flushed */
@@ -471,6 +467,11 @@ flush_buffers(int flush_typeahead)
 	    ;
 	typebuf.tb_off = MAXMAPLEN;
 	typebuf.tb_len = 0;
+#if defined(FEAT_CLIENTSERVER) || defined(FEAT_EVAL)
+	/* Reset the flag that text received from a client or from feedkeys()
+	 * was inserted in the typeahead buffer. */
+	typebuf_was_filled = FALSE;
+#endif
     }
     else		    /* remove mapped characters at the start only */
     {
@@ -521,27 +522,22 @@ CancelRedo(void)
  * Save redobuff and old_redobuff to save_redobuff and save_old_redobuff.
  * Used before executing autocommands and user functions.
  */
-static int save_level = 0;
-
     void
-saveRedobuff(void)
+saveRedobuff(save_redo_T *save_redo)
 {
     char_u	*s;
 
-    if (save_level++ == 0)
-    {
-	save_redobuff = redobuff;
-	redobuff.bh_first.b_next = NULL;
-	save_old_redobuff = old_redobuff;
-	old_redobuff.bh_first.b_next = NULL;
+    save_redo->sr_redobuff = redobuff;
+    redobuff.bh_first.b_next = NULL;
+    save_redo->sr_old_redobuff = old_redobuff;
+    old_redobuff.bh_first.b_next = NULL;
 
-	/* Make a copy, so that ":normal ." in a function works. */
-	s = get_buffcont(&save_redobuff, FALSE);
-	if (s != NULL)
-	{
-	    add_buff(&redobuff, s, -1L);
-	    vim_free(s);
-	}
+    /* Make a copy, so that ":normal ." in a function works. */
+    s = get_buffcont(&save_redo->sr_redobuff, FALSE);
+    if (s != NULL)
+    {
+	add_buff(&redobuff, s, -1L);
+	vim_free(s);
     }
 }
 
@@ -550,15 +546,12 @@ saveRedobuff(void)
  * Used after executing autocommands and user functions.
  */
     void
-restoreRedobuff(void)
+restoreRedobuff(save_redo_T *save_redo)
 {
-    if (--save_level == 0)
-    {
-	free_buff(&redobuff);
-	redobuff = save_redobuff;
-	free_buff(&old_redobuff);
-	old_redobuff = save_old_redobuff;
-    }
+    free_buff(&redobuff);
+    redobuff = save_redo->sr_redobuff;
+    free_buff(&old_redobuff);
+    old_redobuff = save_redo->sr_old_redobuff;
 }
 #endif
 
@@ -932,7 +925,7 @@ init_typebuf(void)
 	typebuf.tb_noremap = noremapbuf_init;
 	typebuf.tb_buflen = TYPELEN_INIT;
 	typebuf.tb_len = 0;
-	typebuf.tb_off = 0;
+	typebuf.tb_off = MAXMAPLEN + 4;
 	typebuf.tb_change_cnt = 1;
     }
 }
@@ -986,11 +979,21 @@ ins_typebuf(
 	typebuf.tb_off -= addlen;
 	mch_memmove(typebuf.tb_buf + typebuf.tb_off, str, (size_t)addlen);
     }
+    else if (typebuf.tb_len == 0 && typebuf.tb_buflen
+					       >= addlen + 3 * (MAXMAPLEN + 4))
+    {
+	/*
+	 * Buffer is empty and string fits in the existing buffer.
+	 * Leave some space before and after, if possible.
+	 */
+	typebuf.tb_off = (typebuf.tb_buflen - addlen - 3 * (MAXMAPLEN + 4)) / 2;
+	mch_memmove(typebuf.tb_buf + typebuf.tb_off, str, (size_t)addlen);
+    }
     else
     {
 	/*
 	 * Need to allocate a new buffer.
-	 * In typebuf.tb_buf there must always be room for 3 * MAXMAPLEN + 4
+	 * In typebuf.tb_buf there must always be room for 3 * (MAXMAPLEN + 4)
 	 * characters.  We add some extra room to avoid having to allocate too
 	 * often.
 	 */
@@ -1303,7 +1306,7 @@ alloc_typebuf(void)
 	return FAIL;
     }
     typebuf.tb_buflen = TYPELEN_INIT;
-    typebuf.tb_off = 0;
+    typebuf.tb_off = MAXMAPLEN + 4;  /* can insert without realloc */
     typebuf.tb_len = 0;
     typebuf.tb_maplen = 0;
     typebuf.tb_silent = 0;
@@ -2585,7 +2588,7 @@ vgetorpeek(int advance)
  * get a character: 3. from the user - handle <Esc> in Insert mode
  */
 		/*
-		 * special case: if we get an <ESC> in insert mode and there
+		 * Special case: if we get an <ESC> in insert mode and there
 		 * are no more characters at once, we pretend to go out of
 		 * insert mode.  This prevents the one second delay after
 		 * typing an <ESC>.  If we get something after all, we may
@@ -2619,8 +2622,8 @@ vgetorpeek(int advance)
 			mode_deleted = TRUE;
 		    }
 #ifdef FEAT_GUI
-		    /* may show different cursor shape */
-		    if (gui.in_use)
+		    /* may show a different cursor shape */
+		    if (gui.in_use && State != NORMAL && !cmd_silent)
 		    {
 			int	    save_State;
 

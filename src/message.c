@@ -315,7 +315,7 @@ trunc_string(
 	for (;;)
 	{
 	    do
-		half = half - (*mb_head_off)(s, s + half - 1) - 1;
+		half = half - utf_head_off(s, s + half - 1) - 1;
 	    while (half > 0 && utf_iscomposing(utf_ptr2char(s + half)));
 	    n = ptr2cells(s + half);
 	    if (len + n > room || half == 0)
@@ -3469,6 +3469,13 @@ give_warning(char_u *message, int hl)
     msg_col = 0;
 
     --no_wait_return;
+}
+
+    void
+give_warning2(char_u *message, char_u *a1, int hl)
+{
+    vim_snprintf((char *)IObuff, IOSIZE, (char *)message, a1);
+    give_warning(IObuff, hl);
 }
 
 /*

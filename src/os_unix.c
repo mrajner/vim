@@ -511,7 +511,7 @@ mch_inchar(
 		|| interrupted
 #endif
 		|| wait_time > 0
-		|| !did_start_blocking)
+		|| (wtime < 0 && !did_start_blocking))
 	    continue;
 
 	/* no character available or interrupted */
@@ -3771,7 +3771,6 @@ check_mouse_termcode(void)
 	del_mouse_termcode(KS_PTERM_MOUSE);
 # endif
 # ifdef FEAT_MOUSE_URXVT
-    /* same conflict as the dec mouse */
     if (use_xterm_mouse() == 3
 #  ifdef FEAT_GUI
 	    && !gui.in_use
@@ -3779,8 +3778,8 @@ check_mouse_termcode(void)
 	    )
     {
 	set_mouse_termcode(KS_URXVT_MOUSE, (char_u *)(term_is_8bit(T_NAME)
-		    ? IF_EB("\233", CSI_STR)
-		    : IF_EB("\033[", ESC_STR "[")));
+		    ? IF_EB("\233*M", CSI_STR "*M")
+		    : IF_EB("\033[*M", ESC_STR "[*M")));
 
 	if (*p_mouse != NUL)
 	{
@@ -3792,7 +3791,6 @@ check_mouse_termcode(void)
 	del_mouse_termcode(KS_URXVT_MOUSE);
 # endif
 # ifdef FEAT_MOUSE_SGR
-    /* There is no conflict with xterm mouse */
     if (use_xterm_mouse() == 4
 #  ifdef FEAT_GUI
 	    && !gui.in_use
@@ -3800,8 +3798,12 @@ check_mouse_termcode(void)
 	    )
     {
 	set_mouse_termcode(KS_SGR_MOUSE, (char_u *)(term_is_8bit(T_NAME)
-		    ? IF_EB("\233<", CSI_STR "<")
-		    : IF_EB("\033[<", ESC_STR "[<")));
+		    ? IF_EB("\233<*M", CSI_STR "<*M")
+		    : IF_EB("\033[<*M", ESC_STR "[<*M")));
+
+	set_mouse_termcode(KS_SGR_MOUSE_RELEASE, (char_u *)(term_is_8bit(T_NAME)
+		    ? IF_EB("\233<*m", CSI_STR "<*m")
+		    : IF_EB("\033[<*m", ESC_STR "[<*m")));
 
 	if (*p_mouse != NUL)
 	{
@@ -3810,7 +3812,10 @@ check_mouse_termcode(void)
 	}
     }
     else
+    {
 	del_mouse_termcode(KS_SGR_MOUSE);
+	del_mouse_termcode(KS_SGR_MOUSE_RELEASE);
+    }
 # endif
 }
 #endif
@@ -6006,6 +6011,7 @@ mch_expand_wildcards(
 {
     int		i;
     size_t	len;
+    long	llen;
     char_u	*p;
     int		dir;
 
@@ -6292,9 +6298,13 @@ mch_expand_wildcards(
 	goto notfound;
     }
     fseek(fd, 0L, SEEK_END);
-    len = ftell(fd);			/* get size of temp file */
+    llen = ftell(fd);			/* get size of temp file */
     fseek(fd, 0L, SEEK_SET);
-    buffer = alloc(len + 1);
+    if (llen < 0)
+	/* just in case ftell() would fail */
+	buffer = NULL;
+    else
+	buffer = alloc(llen + 1);
     if (buffer == NULL)
     {
 	/* out of memory */
@@ -6303,6 +6313,7 @@ mch_expand_wildcards(
 	fclose(fd);
 	return FAIL;
     }
+    len = llen;
     i = fread((char *)buffer, 1, len, fd);
     fclose(fd);
     mch_remove(tempname);
