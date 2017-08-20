@@ -1,5 +1,5 @@
 /* syntax.c */
-void syntax_start(win_T *wp, linenr_T lnum);
+void syntax_start(win_T *wp, linenr_T lnum, proftime_T *syntax_tm);
 void syn_stack_free_all(synblock_T *block);
 void syn_stack_apply_changes(buf_T *buf);
 void syntax_end_parsing(linenr_T lnum);
@@ -31,6 +31,9 @@ char_u *hl_get_font_name(void);
 void hl_set_font_name(char_u *font_name);
 void hl_set_bg_color_name(char_u *name);
 void hl_set_fg_color_name(char_u *name);
+int get_cterm_attr_idx(int attr, int fg, int bg);
+int get_tgc_attr_idx(int attr, guicolor_T fg, guicolor_T bg);
+int get_gui_attr_idx(int attr, guicolor_T fg, guicolor_T bg);
 void clear_hl_tables(void);
 int hl_combine_attr(int char_attr, int prim_attr);
 attrentry_T *syn_gui_attr2entry(int attr);
@@ -52,5 +55,6 @@ void highlight_gui_started(void);
 int highlight_changed(void);
 void set_context_in_highlight_cmd(expand_T *xp, char_u *arg);
 char_u *get_highlight_name(expand_T *xp, int idx);
+char_u *get_highlight_name_ext(expand_T *xp, int idx, int skip_cleared);
 void free_highlight_fonts(void);
 /* vim: set ft=c : */

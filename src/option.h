@@ -630,6 +630,9 @@ EXTERN char_u	*p_luadll;	/* 'luadll' */
 EXTERN int	p_macatsui;	/* 'macatsui' */
 #endif
 EXTERN int	p_magic;	/* 'magic' */
+#ifdef FEAT_MBYTE
+EXTERN char_u	*p_menc;	/* 'makeencoding' */
+#endif
 #ifdef FEAT_QUICKFIX
 EXTERN char_u	*p_mef;		/* 'makeef' */
 EXTERN char_u	*p_mp;		/* 'makeprg' */
@@ -917,6 +920,7 @@ EXTERN char_u	*p_fcs;		/* 'fillchar' */
 #endif
 #ifdef FEAT_VIMINFO
 EXTERN char_u	*p_viminfo;	/* 'viminfo' */
+EXTERN char_u	*p_viminfofile;	/* 'viminfofile' */
 #endif
 #ifdef FEAT_SESSION
 EXTERN char_u	*p_vdir;	/* 'viewdir' */
@@ -984,12 +988,10 @@ enum
 {
     BV_AI = 0
     , BV_AR
-#ifdef FEAT_QUICKFIX
     , BV_BH
-#endif
     , BV_BKC
-#ifdef FEAT_QUICKFIX
     , BV_BT
+#ifdef FEAT_QUICKFIX
     , BV_EFM
     , BV_GP
     , BV_MP
@@ -1065,6 +1067,9 @@ enum
     , BV_LISP
     , BV_LW
 #endif
+#ifdef FEAT_MBYTE
+    , BV_MENC
+#endif
     , BV_MA
     , BV_ML
     , BV_MOD
@@ -1123,6 +1128,10 @@ enum
 #ifdef FEAT_CONCEAL
     , WV_COCU
     , WV_COLE
+#endif
+#ifdef FEAT_TERMINAL
+    , WV_TK
+    , WV_TMS
 #endif
 #ifdef FEAT_CURSORBIND
     , WV_CRBIND

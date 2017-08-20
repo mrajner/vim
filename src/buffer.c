@@ -111,7 +111,7 @@ read_buffer(
     {
 	/* Set or reset 'modified' before executing autocommands, so that
 	 * it can be changed there. */
-	if (!readonlymode && !bufempty())
+	if (!readonlymode && !BUFEMPTY())
 	    changed();
 	else if (retval == OK)
 	    unchanged(curbuf, FALSE);
@@ -372,18 +372,23 @@ open_buffer(
 set_bufref(bufref_T *bufref, buf_T *buf)
 {
     bufref->br_buf = buf;
+    bufref->br_fnum = buf == NULL ? 0 : buf->b_fnum;
     bufref->br_buf_free_count = buf_free_count;
 }
 
 /*
- * Return TRUE if "bufref->br_buf" points to a valid buffer.
+ * Return TRUE if "bufref->br_buf" points to the same buffer as when
+ * set_bufref() was called and it is a valid buffer.
  * Only goes through the buffer list if buf_free_count changed.
+ * Also checks if b_fnum is still the same, a :bwipe followed by :new might get
+ * the same allocated memory, but it's a different buffer.
  */
     int
 bufref_valid(bufref_T *bufref)
 {
     return bufref->br_buf_free_count == buf_free_count
-					   ? TRUE : buf_valid(bufref->br_buf);
+	? TRUE : buf_valid(bufref->br_buf)
+				  && bufref->br_fnum == bufref->br_buf->b_fnum;
 }
 
 /*
@@ -463,7 +468,6 @@ close_buffer(
     int		del_buf = (action == DOBUF_DEL || action == DOBUF_WIPE);
     int		wipe_buf = (action == DOBUF_WIPE);
 
-#ifdef FEAT_QUICKFIX
     /*
      * Force unloading or deleting when 'bufhidden' says so.
      * The caller must take care of NOT deleting/freeing when 'bufhidden' is
@@ -482,7 +486,6 @@ close_buffer(
     }
     else if (buf->b_p_bh[0] == 'u')	/* 'bufhidden' == "unload" */
 	unload_buf = TRUE;
-#endif
 
 #ifdef FEAT_AUTOCMD
     /* Disallow deleting the buffer when it is locked (already being closed or
@@ -832,7 +835,6 @@ free_buffer(buf_T *buf)
     free_buffer_stuff(buf, TRUE);
 #ifdef FEAT_EVAL
     unref_var_dict(buf->b_vars);
-    buf->b_changedtick = &buf->b_ct_val;
 #endif
 #ifdef FEAT_LUA
     lua_buffer_free(buf);
@@ -855,6 +857,9 @@ free_buffer(buf_T *buf)
 #ifdef FEAT_JOB_CHANNEL
     channel_buffer_free(buf);
 #endif
+#ifdef FEAT_TERMINAL
+    free_terminal(buf->b_term);
+#endif
 
     buf_hashtab_remove(buf);
 
@@ -874,31 +879,22 @@ free_buffer(buf_T *buf)
 }
 
 /*
- * Initializes buf->b_changedtick.
+ * Initializes b:changedtick.
  */
     static void
 init_changedtick(buf_T *buf)
 {
-#ifdef FEAT_EVAL
-    dictitem_T *di = dictitem_alloc((char_u *)"changedtick");
+    dictitem_T *di = (dictitem_T *)&buf->b_ct_di;
 
-    if (di != NULL)
-    {
-	di->di_flags |= DI_FLAGS_FIX | DI_FLAGS_RO;
-	di->di_tv.v_type = VAR_NUMBER;
-	di->di_tv.v_lock = VAR_FIXED;
-	di->di_tv.vval.v_number = 0;
-	if (dict_add(buf->b_vars, di) == OK)
-	    buf->b_changedtick = &di->di_tv.vval.v_number;
-	else
-	{
-	    vim_free(di);
-	    buf->b_changedtick = &buf->b_ct_val;
-	}
-    }
-    else
+    di->di_flags = DI_FLAGS_FIX | DI_FLAGS_RO;
+    di->di_tv.v_type = VAR_NUMBER;
+    di->di_tv.v_lock = VAR_FIXED;
+    di->di_tv.vval.v_number = 0;
+
+#ifdef FEAT_EVAL
+    STRCPY(buf->b_ct_di.di_key, "changedtick");
+    (void)dict_add(buf->b_vars, di);
 #endif
-	buf->b_changedtick = &buf->b_ct_val;
 }
 
 /*
@@ -919,12 +915,12 @@ free_buffer_stuff(
     }
 #ifdef FEAT_EVAL
     {
-	varnumber_T tick = *buf->b_changedtick;
+	varnumber_T tick = CHANGEDTICK(buf);
 
 	vars_clear(&buf->b_vars->dv_hashtab); /* free all buffer variables */
 	hash_init(&buf->b_vars->dv_hashtab);
 	init_changedtick(buf);
-	*buf->b_changedtick = tick;
+	CHANGEDTICK(buf) = tick;
     }
 #endif
 #ifdef FEAT_USR_CMDS
@@ -1776,7 +1772,7 @@ enter_buffer(buf_T *buf)
 #endif
 
 #ifdef FEAT_SYN_HL
-    curwin->w_s = &(buf->b_s);
+    curwin->w_s = &(curbuf->b_s);
 #endif
 
     /* Cursor on first line by default. */
@@ -1969,7 +1965,7 @@ buflist_new(
 	    && curbuf != NULL
 	    && curbuf->b_ffname == NULL
 	    && curbuf->b_nwindows <= 1
-	    && (curbuf->b_ml.ml_mfp == NULL || bufempty()))
+	    && (curbuf->b_ml.ml_mfp == NULL || BUFEMPTY()))
     {
 	buf = curbuf;
 #ifdef FEAT_AUTOCMD
@@ -1984,16 +1980,14 @@ buflist_new(
 	    return NULL;
 # endif
 #endif
-#ifdef FEAT_QUICKFIX
-# ifdef FEAT_AUTOCMD
+#ifdef FEAT_AUTOCMD
 	if (buf == curbuf)
-# endif
+#endif
 	{
 	    /* Make sure 'bufhidden' and 'buftype' are empty */
 	    clear_string_option(&buf->b_p_bh);
 	    clear_string_option(&buf->b_p_bt);
 	}
-#endif
     }
     if (buf != curbuf || curbuf == NULL)
     {
@@ -2167,10 +2161,8 @@ free_buf_options(
 	clear_string_option(&buf->b_p_fenc);
 #endif
 	clear_string_option(&buf->b_p_ff);
-#ifdef FEAT_QUICKFIX
 	clear_string_option(&buf->b_p_bh);
 	clear_string_option(&buf->b_p_bt);
-#endif
     }
 #ifdef FEAT_FIND_ID
     clear_string_option(&buf->b_p_def);
@@ -2265,17 +2257,20 @@ free_buf_options(
     clear_string_option(&buf->b_p_lw);
 #endif
     clear_string_option(&buf->b_p_bkc);
+#ifdef FEAT_MBYTE
+    clear_string_option(&buf->b_p_menc);
+#endif
 }
 
 /*
- * get alternate file n
- * set linenr to lnum or altfpos.lnum if lnum == 0
- *	also set cursor column to altfpos.col if 'startofline' is not set.
+ * Get alternate file "n".
+ * Set linenr to "lnum" or altfpos.lnum if "lnum" == 0.
+ *	Also set cursor column to altfpos.col if 'startofline' is not set.
  * if (options & GETF_SETMARK) call setpcmark()
  * if (options & GETF_ALT) we are jumping to an alternate file.
  * if (options & GETF_SWITCH) respect 'switchbuf' settings when jumping
  *
- * return FAIL for failure, OK for success
+ * Return FAIL for failure, OK for success.
  */
     int
 buflist_getfile(
@@ -2341,7 +2336,7 @@ buflist_getfile(
 	/* If 'switchbuf' contains "split", "vsplit" or "newtab" and the
 	 * current buffer isn't empty: open new tab or window */
 	if (wp == NULL && (swb_flags & (SWB_VSPLIT | SWB_SPLIT | SWB_NEWTAB))
-							       && !bufempty())
+							       && !BUFEMPTY())
 	{
 	    if (swb_flags & SWB_NEWTAB)
 		tabpage_new();
@@ -2354,8 +2349,8 @@ buflist_getfile(
 #endif
 
     ++RedrawingDisabled;
-    if (getfile(buf->b_fnum, NULL, NULL, (options & GETF_SETMARK),
-							  lnum, forceit) <= 0)
+    if (GETFILE_SUCCESS(getfile(buf->b_fnum, NULL, NULL,
+				     (options & GETF_SETMARK), lnum, forceit)))
     {
 	--RedrawingDisabled;
 
@@ -3006,7 +3001,7 @@ buflist_findlnum(buf_T *buf)
 
 #if defined(FEAT_LISTCMDS) || defined(PROTO)
 /*
- * List all know file names (for :files and :buffers command).
+ * List all known file names (for :files and :buffers command).
  */
     void
 buflist_list(exarg_T *eap)
@@ -3631,6 +3626,13 @@ maketitle(void)
 #define SPACE_FOR_ARGNR (IOSIZE - 10)  /* at least room for " - VIM" */
 	    if (curbuf->b_fname == NULL)
 		vim_strncpy(buf, (char_u *)_("[No Name]"), SPACE_FOR_FNAME);
+#ifdef FEAT_TERMINAL
+	    else if (curbuf->b_term != NULL)
+	    {
+		vim_strncpy(buf, term_get_status_text(curbuf->b_term),
+							      SPACE_FOR_FNAME);
+	    }
+#endif
 	    else
 	    {
 		p = transstr(gettail(curbuf->b_fname));
@@ -3638,20 +3640,27 @@ maketitle(void)
 		vim_free(p);
 	    }
 
-	    switch (bufIsChanged(curbuf)
-		    + (curbuf->b_p_ro * 2)
-		    + (!curbuf->b_p_ma * 4))
-	    {
-		case 1: STRCAT(buf, " +"); break;
-		case 2: STRCAT(buf, " ="); break;
-		case 3: STRCAT(buf, " =+"); break;
-		case 4:
-		case 6: STRCAT(buf, " -"); break;
-		case 5:
-		case 7: STRCAT(buf, " -+"); break;
-	    }
+#ifdef FEAT_TERMINAL
+	    if (curbuf->b_term == NULL)
+#endif
+		switch (bufIsChanged(curbuf)
+			+ (curbuf->b_p_ro * 2)
+			+ (!curbuf->b_p_ma * 4))
+		{
+		    case 1: STRCAT(buf, " +"); break;
+		    case 2: STRCAT(buf, " ="); break;
+		    case 3: STRCAT(buf, " =+"); break;
+		    case 4:
+		    case 6: STRCAT(buf, " -"); break;
+		    case 5:
+		    case 7: STRCAT(buf, " -+"); break;
+		}
 
-	    if (curbuf->b_fname != NULL)
+	    if (curbuf->b_fname != NULL
+#ifdef FEAT_TERMINAL
+		    && curbuf->b_term == NULL
+#endif
+		    )
 	    {
 		/* Get path of file, replace home dir with ~ */
 		off = (int)STRLEN(buf);
@@ -3667,9 +3676,11 @@ maketitle(void)
 		/* remove the file name */
 		p = gettail_sep(buf + off);
 		if (p == buf + off)
+		{
 		    /* must be a help buffer */
 		    vim_strncpy(buf + off, (char_u *)_("help"),
 					   (size_t)(SPACE_FOR_DIR - off - 1));
+		}
 		else
 		    *p = NUL;
 
@@ -5024,7 +5035,7 @@ do_arg_all(
 #ifdef FEAT_WINDOWS
     /* ":drop all" should re-use an empty window to avoid "--remote-tab"
      * leaving an empty tab page when executed locally. */
-    if (keep_tabs && bufempty() && curbuf->b_nwindows == 1
+    if (keep_tabs && BUFEMPTY() && curbuf->b_nwindows == 1
 			    && curbuf->b_ffname == NULL && !curbuf->b_changed)
 	use_firstwin = TRUE;
 #endif
@@ -5663,16 +5674,20 @@ buf_spname(buf_T *buf)
 	    return (char_u *)_(msg_qflist);
     }
 #endif
-#ifdef FEAT_QUICKFIX
+
     /* There is no _file_ when 'buftype' is "nofile", b_sfname
-     * contains the name as specified by the user */
+     * contains the name as specified by the user. */
     if (bt_nofile(buf))
     {
+#ifdef FEAT_TERMINAL
+	if (buf->b_term != NULL)
+	    return term_get_status_text(buf->b_term);
+#endif
 	if (buf->b_sfname != NULL)
 	    return buf->b_sfname;
 	return (char_u *)_("[Scratch]");
     }
-#endif
+
     if (buf->b_fname == NULL)
 	return (char_u *)_("[No Name]");
     return NULL;
@@ -6028,7 +6043,7 @@ sign_list_placed(buf_T *rbuf)
 	if (buf->b_signlist != NULL)
 	{
 	    vim_snprintf(lbuf, BUFSIZ, _("Signs for %s:"), buf->b_fname);
-	    MSG_PUTS_ATTR(lbuf, hl_attr(HLF_D));
+	    MSG_PUTS_ATTR(lbuf, HL_ATTR(HLF_D));
 	    msg_putchar('\n');
 	}
 	for (p = buf->b_signlist; p != NULL && !got_int; p = p->next)

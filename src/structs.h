@@ -68,12 +68,15 @@ typedef struct wininfo_S	wininfo_T;
 typedef struct frame_S		frame_T;
 typedef int			scid_T;		/* script ID */
 typedef struct file_buffer	buf_T;  /* forward declaration */
+typedef struct terminal_S	term_T;
 
-/* Reference to a buffer that stores the value of buf_free_count.
+/*
+ * Reference to a buffer that stores the value of buf_free_count.
  * bufref_valid() only needs to check "buf" when the count differs.
  */
 typedef struct {
     buf_T   *br_buf;
+    int	    br_fnum;
     int	    br_buf_free_count;
 } bufref_T;
 
@@ -265,6 +268,12 @@ typedef struct
 #ifdef FEAT_SIGNS
     char_u	*wo_scl;
 # define w_p_scl w_onebuf_opt.wo_scl	/* 'signcolumn' */
+#endif
+#ifdef FEAT_TERMINAL
+    char_u	*wo_tk;
+#define w_p_tk w_onebuf_opt.wo_tk	/* 'termkey' */
+    char_u	*wo_tms;
+#define w_p_tms w_onebuf_opt.wo_tms	/* 'termsize' */
 #endif
 
 #ifdef FEAT_EVAL
@@ -514,6 +523,12 @@ struct buffheader
     int		bh_index;	/* index for reading */
     int		bh_space;	/* space in bh_curr for appending */
 };
+
+typedef struct
+{
+    buffheader_T sr_redobuff;
+    buffheader_T sr_old_redobuff;
+} save_redo_T;
 
 /*
  * used for completion on the command line
@@ -1690,6 +1705,7 @@ typedef struct
     char_u	jo_io_name_buf[4][NUMBUFLEN];
     char_u	*jo_io_name[4];	/* not allocated! */
     int		jo_io_buf[4];
+    int		jo_pty;
     int		jo_modifiable[4];
     int		jo_message[4];
     channel_T	*jo_channel;
@@ -1717,6 +1733,12 @@ typedef struct
     int		jo_id;
     char_u	jo_soe_buf[NUMBUFLEN];
     char_u	*jo_stoponexit;
+
+#ifdef FEAT_TERMINAL
+    /* when non-zero run the job in a terminal window of this size */
+    int		jo_term_rows;
+    int		jo_term_cols;
+#endif
 } jobopt_T;
 
 
@@ -1789,6 +1811,9 @@ typedef struct {
     hashtab_T	b_keywtab;		/* syntax keywords hash table */
     hashtab_T	b_keywtab_ic;		/* idem, ignore case */
     int		b_syn_error;		/* TRUE when error occurred in HL */
+# ifdef FEAT_RELTIME
+    int		b_syn_slow;		/* TRUE when 'redrawtime' reached */
+# endif
     int		b_syn_ic;		/* ignore case for :syn cmds */
     int		b_syn_spell;		/* SYNSPL_ values */
     garray_T	b_syn_patterns;		/* table for syntax patterns */
@@ -1916,9 +1941,10 @@ struct file_buffer
 
     int		b_changed;	/* 'modified': Set to TRUE if something in the
 				   file has been changed and not written out. */
-    varnumber_T	*b_changedtick;	/* points into b:changedtick or b_ct_val;
+    dictitem16_T b_ct_di;	/* holds the b:changedtick value in
+				   b_ct_di.di_tv.vval.v_number;
 				   incremented for each change, also for undo */
-    varnumber_T b_ct_val;	/* fallback for b:changedtick */
+#define CHANGEDTICK(buf) ((buf)->b_ct_di.di_tv.vval.v_number)
 
     int		b_saving;	/* Set to TRUE if we are in the middle of
 				   saving the buffer. */
@@ -2062,9 +2088,9 @@ struct file_buffer
 #ifdef FEAT_MBYTE
     int		b_p_bomb;	/* 'bomb' */
 #endif
-#ifdef FEAT_QUICKFIX
     char_u	*b_p_bh;	/* 'bufhidden' */
     char_u	*b_p_bt;	/* 'buftype' */
+#ifdef FEAT_QUICKFIX
 #define BUF_HAS_QF_ENTRY 1
 #define BUF_HAS_LL_ENTRY 2
     int		b_has_qf_entry;
@@ -2131,6 +2157,9 @@ struct file_buffer
     char_u	*b_p_kp;	/* 'keywordprg' */
 #ifdef FEAT_LISP
     int		b_p_lisp;	/* 'lisp' */
+#endif
+#ifdef FEAT_MBYTE
+    char_u	*b_p_menc;	/* 'makeencoding' */
 #endif
     char_u	*b_p_mps;	/* 'matchpairs' */
     int		b_p_ml;		/* 'modeline' */
@@ -2232,6 +2261,7 @@ struct file_buffer
     int		b_ind_hash_comment;
     int		b_ind_cpp_namespace;
     int		b_ind_if_for_while;
+    int		b_ind_cpp_extern_c;
 #endif
 
     linenr_T	b_no_eol_lnum;	/* non-zero lnum when last line of next binary
@@ -2334,6 +2364,11 @@ struct file_buffer
 				 * the file. NULL when not using encryption. */
 #endif
     int		b_mapped_ctrl_c; /* modes where CTRL-C is mapped */
+
+#ifdef FEAT_TERMINAL
+    term_T	*b_term;	/* When not NULL this buffer is for a terminal
+				 * window. */
+#endif
 
 }; /* file_buffer */
 
@@ -3217,6 +3252,7 @@ struct timer_S
     long	tr_interval;	    /* msec */
     char_u	*tr_callback;	    /* allocated */
     partial_T	*tr_partial;
+    int		tr_emsg_count;
 #endif
 };
 
