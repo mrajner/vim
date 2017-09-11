@@ -114,21 +114,25 @@ char		*tgetstr(char *, char **);
 #  else
 #   define LOG_TR(msg)
 #  endif
+
+#  define STATUS_GET	1	/* send request when switching to RAW mode */
+#  define STATUS_SENT	2	/* did send request, waiting for response */
+#  define STATUS_GOT	3	/* received response */
+
 /* Request Terminal Version status: */
-#  define CRV_GET	1	/* send T_CRV when switched to RAW mode */
-#  define CRV_SENT	2	/* did send T_CRV, waiting for answer */
-#  define CRV_GOT	3	/* received T_CRV response */
-static int crv_status = CRV_GET;
+static int crv_status = STATUS_GET;
+
 /* Request Cursor position report: */
-#  define U7_GET	1	/* send T_U7 when switched to RAW mode */
-#  define U7_SENT	2	/* did send T_U7, waiting for answer */
-#  define U7_GOT	3	/* received T_U7 response */
-static int u7_status = U7_GET;
+static int u7_status = STATUS_GET;
+
 /* Request background color report: */
-#  define RBG_GET	1	/* send T_RBG when switched to RAW mode */
-#  define RBG_SENT	2	/* did send T_RBG, waiting for answer */
-#  define RBG_GOT	3	/* received T_RBG response */
-static int rbg_status = RBG_GET;
+static int rbg_status = STATUS_GET;
+
+/* Request cursor blinking mode report: */
+static int rbm_status = STATUS_GET;
+
+/* Request cursor style report: */
+static int rcs_status = STATUS_GET;
 # endif
 
 /*
@@ -159,6 +163,19 @@ static char_u *vim_tgetstr(char *s, char_u **pp);
 #endif /* HAVE_TGETENT */
 
 static int  detected_8bit = FALSE;	/* detected 8-bit terminal */
+
+#ifdef FEAT_TERMRESPONSE
+/* When the cursor shape was detected these values are used:
+ * 1: block, 2: underline, 3: vertical bar */
+static int initial_cursor_shape = 0;
+
+/* The blink flag from the style response may be inverted from the actual
+ * blinking state, xterm XORs the flags. */
+static int initial_cursor_shape_blink = FALSE;
+
+/* The blink flag from the blinking-cursor mode response */
+static int initial_cursor_blink = FALSE;
+#endif
 
 static struct builtin_term builtin_termcaps[] =
 {
@@ -200,6 +217,8 @@ static struct builtin_term builtin_termcaps[] =
     {(int)KS_US,	IF_EB("\033|8h", ESC_STR "|8h")},   /* HL_UNDERLINE */
     {(int)KS_UCE,	IF_EB("\033|8C", ESC_STR "|8C")},   /* HL_UNDERCURL */
     {(int)KS_UCS,	IF_EB("\033|8c", ESC_STR "|8c")},   /* HL_UNDERCURL */
+    {(int)KS_STE,	IF_EB("\033|4C", ESC_STR "|4C")},   /* HL_STRIKETHROUGH */
+    {(int)KS_STS,	IF_EB("\033|4c", ESC_STR "|4c")},   /* HL_STRIKETHROUGH */
     {(int)KS_CZR,	IF_EB("\033|4H", ESC_STR "|4H")},   /* HL_ITALIC */
     {(int)KS_CZH,	IF_EB("\033|4h", ESC_STR "|4h")},   /* HL_ITALIC */
     {(int)KS_VB,	IF_EB("\033|f", ESC_STR "|f")},
@@ -814,17 +833,22 @@ static struct builtin_term builtin_termcaps[] =
     {(int)KS_MD,	IF_EB("\033[1m", ESC_STR "[1m")},
     {(int)KS_UE,	IF_EB("\033[m", ESC_STR "[m")},
     {(int)KS_US,	IF_EB("\033[4m", ESC_STR "[4m")},
+    {(int)KS_STE,	IF_EB("\033[29m", ESC_STR "[29m")},
+    {(int)KS_STS,	IF_EB("\033[9m", ESC_STR "[9m")},
     {(int)KS_MS,	"y"},
     {(int)KS_UT,	"y"},
     {(int)KS_LE,	"\b"},
     {(int)KS_VI,	IF_EB("\033[?25l", ESC_STR "[?25l")},
     {(int)KS_VE,	IF_EB("\033[?25h", ESC_STR "[?25h")},
     {(int)KS_VS,	IF_EB("\033[?12h", ESC_STR "[?12h")},
+    {(int)KS_CVS,	IF_EB("\033[?12l", ESC_STR "[?12l")},
 #  ifdef TERMINFO
     {(int)KS_CSH,	IF_EB("\033[%p1%d q", ESC_STR "[%p1%d q")},
 #  else
     {(int)KS_CSH,	IF_EB("\033[%d q", ESC_STR "[%d q")},
 #  endif
+    {(int)KS_CRC,	IF_EB("\033[?12$p", ESC_STR "[?12$p")},
+    {(int)KS_CRS,	IF_EB("\033P$q q\033\\", ESC_STR "P$q q" ESC_STR "\\")},
 #  ifdef TERMINFO
     {(int)KS_CM,	IF_EB("\033[%i%p1%d;%p2%dH",
 						  ESC_STR "[%i%p1%d;%p2%dH")},
@@ -1131,6 +1155,8 @@ static struct builtin_term builtin_termcaps[] =
     {(int)KS_US,	"[US]"},
     {(int)KS_UCE,	"[UCE]"},
     {(int)KS_UCS,	"[UCS]"},
+    {(int)KS_STE,	"[STE]"},
+    {(int)KS_STS,	"[STS]"},
     {(int)KS_MS,	"[MS]"},
     {(int)KS_UT,	"[UT]"},
     {(int)KS_XN,	"[XN]"},
@@ -1349,6 +1375,7 @@ static int	need_gather = FALSE;	    /* need to fill termleader[] */
 static char_u	termleader[256 + 1];	    /* for check_termcode() */
 #ifdef FEAT_TERMRESPONSE
 static int	check_for_codes = FALSE;    /* check for key code response */
+static int	is_not_xterm = FALSE;	    /* recognized not-really-xterm */
 #endif
 
     static struct builtin_term *
@@ -1570,16 +1597,18 @@ set_termname(char_u *term)
 				{KS_DL, "dl"}, {KS_CDL,"DL"}, {KS_CS, "cs"},
 				{KS_CL, "cl"}, {KS_CD, "cd"},
 				{KS_VI, "vi"}, {KS_VE, "ve"}, {KS_MB, "mb"},
-				{KS_VS, "vs"}, {KS_ME, "me"}, {KS_MR, "mr"},
+				{KS_ME, "me"}, {KS_MR, "mr"},
 				{KS_MD, "md"}, {KS_SE, "se"}, {KS_SO, "so"},
 				{KS_CZH,"ZH"}, {KS_CZR,"ZR"}, {KS_UE, "ue"},
 				{KS_US, "us"}, {KS_UCE, "Ce"}, {KS_UCS, "Cs"},
+				{KS_STE,"Te"}, {KS_STS,"Ts"},
 				{KS_CM, "cm"}, {KS_SR, "sr"},
 				{KS_CRI,"RI"}, {KS_VB, "vb"}, {KS_KS, "ks"},
 				{KS_KE, "ke"}, {KS_TI, "ti"}, {KS_TE, "te"},
 				{KS_BC, "bc"}, {KS_CSB,"Sb"}, {KS_CSF,"Sf"},
 				{KS_CAB,"AB"}, {KS_CAF,"AF"}, {KS_LE, "le"},
 				{KS_ND, "nd"}, {KS_OP, "op"}, {KS_CRV, "RV"},
+				{KS_VS, "vs"}, {KS_CVS, "VS"},
 				{KS_CIS, "IS"}, {KS_CIE, "IE"},
 				{KS_CSC, "SC"}, {KS_CEC, "EC"},
 				{KS_TS, "ts"}, {KS_FS, "fs"},
@@ -1803,9 +1832,9 @@ set_termname(char_u *term)
  * is being used.
  * Don't do this when the GUI is active, it uses "t_kb" and "t_kD" directly.
  */
-#ifdef FEAT_GUI
+# ifdef FEAT_GUI
     if (!gui.in_use)
-#endif
+# endif
 	get_stty();
 #endif
 
@@ -1906,8 +1935,8 @@ set_termname(char_u *term)
     full_screen = TRUE;		/* we can use termcap codes from now on */
     set_term_defaults();	/* use current values as defaults */
 #ifdef FEAT_TERMRESPONSE
-    LOG_TR("setting crv_status to CRV_GET");
-    crv_status = CRV_GET;	/* Get terminal version later */
+    LOG_TR("setting crv_status to STATUS_GET");
+    crv_status = STATUS_GET;	/* Get terminal version later */
 #endif
 
     /*
@@ -3298,9 +3327,11 @@ settmode(int tmode)
 		/* May need to check for T_CRV response and termcodes, it
 		 * doesn't work in Cooked mode, an external program may get
 		 * them. */
-		if (tmode != TMODE_RAW && (crv_status == CRV_SENT
-					 || u7_status == U7_SENT
-					 || rbg_status == RBG_SENT))
+		if (tmode != TMODE_RAW && (crv_status == STATUS_SENT
+					 || u7_status == STATUS_SENT
+					 || rbg_status == STATUS_SENT
+					 || rbm_status == STATUS_SENT
+					 || rcs_status == STATUS_SENT))
 		    (void)vpeekc_nomap();
 		check_for_codes_from_term();
 	    }
@@ -3347,7 +3378,7 @@ starttermcap(void)
 	    may_req_termresponse();
 	    /* Immediately check for a response.  If t_Co changes, we don't
 	     * want to redraw with wrong colors first. */
-	    if (crv_status == CRV_SENT)
+	    if (crv_status == STATUS_SENT)
 		check_for_codes_from_term();
 	}
 #endif
@@ -3367,8 +3398,11 @@ stoptermcap(void)
 # endif
 	{
 	    /* May need to discard T_CRV, T_U7 or T_RBG response. */
-	    if (crv_status == CRV_SENT || u7_status == U7_SENT
-						     || rbg_status == RBG_SENT)
+	    if (crv_status == STATUS_SENT
+		    || u7_status == STATUS_SENT
+		    || rbg_status == STATUS_SENT
+		    || rbm_status == STATUS_SENT
+		    || rcs_status == STATUS_SENT)
 	    {
 # ifdef UNIX
 		/* Give the terminal a chance to respond. */
@@ -3414,14 +3448,14 @@ stoptermcap(void)
     void
 may_req_termresponse(void)
 {
-    if (crv_status == CRV_GET
+    if (crv_status == STATUS_GET
 	    && can_get_termresponse()
 	    && starting == 0
 	    && *T_CRV != NUL)
     {
-	LOG_TR("Sending CRV");
+	LOG_TR("Sending CRV request");
 	out_str(T_CRV);
-	crv_status = CRV_SENT;
+	crv_status = STATUS_SENT;
 	/* check for the characters now, otherwise they might be eaten by
 	 * get_keystroke() */
 	out_flush();
@@ -3442,7 +3476,7 @@ may_req_termresponse(void)
     void
 may_req_ambiguous_char_width(void)
 {
-    if (u7_status == U7_GET
+    if (u7_status == STATUS_GET
 	    && can_get_termresponse()
 	    && starting == 0
 	    && *T_U7 != NUL
@@ -3457,7 +3491,7 @@ may_req_ambiguous_char_width(void)
 	 buf[mb_char2bytes(0x25bd, buf)] = 0;
 	 out_str(buf);
 	 out_str(T_U7);
-	 u7_status = U7_SENT;
+	 u7_status = STATUS_SENT;
 	 out_flush();
 
 	 /* This overwrites a few characters on the screen, a redraw is needed
@@ -3481,19 +3515,23 @@ may_req_ambiguous_char_width(void)
     void
 may_req_bg_color(void)
 {
-    if (rbg_status == RBG_GET
-	    && can_get_termresponse()
-	    && starting == 0
-	    && *T_RBG != NUL
-	    && !option_was_set((char_u *)"bg"))
+    if (can_get_termresponse() && starting == 0)
     {
-	LOG_TR("Sending BG request");
-	out_str(T_RBG);
-	rbg_status = RBG_SENT;
-	/* check for the characters now, otherwise they might be eaten by
-	 * get_keystroke() */
-	out_flush();
-	(void)vpeekc_nomap();
+	/* Only request background if t_RB is set and 'background' wasn't
+	 * changed. */
+	if (rbg_status == STATUS_GET
+		&& *T_RBG != NUL
+		&& !option_was_set((char_u *)"bg"))
+	{
+	    LOG_TR("Sending BG request");
+	    out_str(T_RBG);
+	    rbg_status = STATUS_SENT;
+
+	    /* check for the characters now, otherwise they might be eaten by
+	     * get_keystroke() */
+	    out_flush();
+	    (void)vpeekc_nomap();
+	}
     }
 }
 
@@ -3626,11 +3664,11 @@ mouse_model_popup(void)
     void
 scroll_start(void)
 {
-    if (*T_VS != NUL)
+    if (*T_VS != NUL && *T_CVS != NUL)
     {
 	out_str(T_VS);
-	out_str(T_VE);
-	screen_start();			/* don't know where cursor is now */
+	out_str(T_CVS);
+	screen_start();		/* don't know where cursor is now */
     }
 }
 
@@ -3655,10 +3693,9 @@ cursor_on(void)
     void
 cursor_off(void)
 {
-    if (full_screen)
+    if (full_screen && !cursor_is_off)
     {
-	if (!cursor_is_off)
-	    out_str(T_VI);	    /* disable cursor */
+	out_str(T_VI);	    /* disable cursor */
 	cursor_is_off = TRUE;
     }
 }
@@ -3676,7 +3713,14 @@ term_cursor_mode(int forced)
     /* Only do something when redrawing the screen and we can restore the
      * mode. */
     if (!full_screen || *T_CEI == NUL)
+    {
+# ifdef FEAT_TERMRESPONSE
+	if (forced && initial_cursor_shape > 0)
+	    /* Restore to initial values. */
+	    term_cursor_shape(initial_cursor_shape, initial_cursor_blink);
+# endif
 	return;
+    }
 
     if ((State & REPLACE) == REPLACE)
     {
@@ -3720,19 +3764,21 @@ term_cursor_color(char_u *color)
 	out_flush();
     }
 }
+# endif
 
-    void
-term_cursor_blink(int blink)
+    int
+blink_state_is_inverted()
 {
-    if (blink)
-	out_str(T_VS);
-    else
-	out_str(T_VE);
-    out_flush();
+#ifdef FEAT_TERMRESPONSE
+    return rbm_status == STATUS_GOT && rcs_status == STATUS_GOT
+		&& initial_cursor_blink != initial_cursor_shape_blink;
+#else
+    return FALSE;
+#endif
 }
 
 /*
- * "shape" == 1: block, "shape" == 2: underline, "shape" == 3: vertical bar
+ * "shape": 1 = block, 2 = underline, 3 = vertical bar
  */
     void
 term_cursor_shape(int shape, int blink)
@@ -3742,8 +3788,28 @@ term_cursor_shape(int shape, int blink)
 	OUT_STR(tgoto((char *)T_CSH, 0, shape * 2 - blink));
 	out_flush();
     }
+    else
+    {
+	int do_blink = blink;
+
+	/* t_SH is empty: try setting just the blink state.
+	 * The blink flags are XORed together, if the initial blinking from
+	 * style and shape differs, we need to invert the flag here. */
+	if (blink_state_is_inverted())
+	    do_blink = !blink;
+
+	if (do_blink && *T_VS != NUL)
+	{
+	    out_str(T_VS);
+	    out_flush();
+	}
+	else if (!do_blink && *T_CVS != NUL)
+	{
+	    out_str(T_CVS);
+	    out_flush();
+	}
+    }
 }
-# endif
 #endif
 
 /*
@@ -4290,7 +4356,8 @@ check_termcode(
 			{
 			    /* Skip over the digits, the final char must
 			     * follow. */
-			    for (j = slen - 2; j < len && (isdigit(tp[j]) || tp[j] == ';'); ++j)
+			    for (j = slen - 2; j < len && (isdigit(tp[j])
+							 || tp[j] == ';'); ++j)
 				;
 			    ++j;
 			    if (len < j)	/* got a partial sequence */
@@ -4394,7 +4461,7 @@ check_termcode(
 			char *aw = NULL;
 
 			LOG_TR("Received U7 status");
-			u7_status = U7_GOT;
+			u7_status = STATUS_GOT;
 # ifdef FEAT_AUTOCMD
 			did_cursorhold = TRUE;
 # endif
@@ -4427,14 +4494,19 @@ check_termcode(
 		    key_name[0] = (int)KS_EXTRA;
 		    key_name[1] = (int)KE_IGNORE;
 		    slen = i + 1;
+# ifdef FEAT_EVAL
+		    set_vim_var_string(VV_TERMU7RESP, tp, slen);
+# endif
 		}
 		else
 #endif
 		/* eat it when at least one digit and ending in 'c' */
 		if (*T_CRV != NUL && i > 2 + (tp[0] != CSI) && tp[i] == 'c')
 		{
-		    LOG_TR("Received CRV");
-		    crv_status = CRV_GOT;
+		    int version = col;
+
+		    LOG_TR("Received CRV response");
+		    crv_status = STATUS_GOT;
 # ifdef FEAT_AUTOCMD
 		    did_cursorhold = TRUE;
 # endif
@@ -4445,31 +4517,34 @@ check_termcode(
 			switch_to_8bit();
 
 		    /* rxvt sends its version number: "20703" is 2.7.3.
+		     * Screen sends 40500.
 		     * Ignore it for when the user has set 'term' to xterm,
 		     * even though it's an rxvt. */
-		    if (col > 20000)
-			col = 0;
+		    if (version > 20000)
+			version = 0;
 
 		    if (tp[1 + (tp[0] != CSI)] == '>' && semicols == 2)
 		    {
+			int need_flush = FALSE;
+
 			/* Only set 'ttymouse' automatically if it was not set
 			 * by the user already. */
 			if (!option_was_set((char_u *)"ttym"))
 			{
 # ifdef TTYM_SGR
-			    if (col >= 277)
+			    if (version >= 277)
 				set_option_value((char_u *)"ttym", 0L,
 							  (char_u *)"sgr", 0);
 			    else
 # endif
 			    /* if xterm version >= 95 use mouse dragging */
-			    if (col >= 95)
+			    if (version >= 95)
 				set_option_value((char_u *)"ttym", 0L,
 						       (char_u *)"xterm2", 0);
 			}
 
 			/* if xterm version >= 141 try to get termcap codes */
-			if (col >= 141)
+			if (version >= 141)
 			{
 			    LOG_TR("Enable checking for XT codes");
 			    check_for_codes = TRUE;
@@ -4478,8 +4553,8 @@ check_termcode(
 			}
 
 			/* libvterm sends 0;100;0 */
-			if (col == 100
-				&& STRNCMP(tp + extra - 2, ">0;100;0c", 9) == 0)
+			if (version == 100
+				&& STRNCMP(tp + extra - 2, "0;100;0c", 8) == 0)
 			{
 			    /* If run from Vim $COLORS is set to the number of
 			     * colors the terminal supports.  Otherwise assume
@@ -4487,9 +4562,68 @@ check_termcode(
 			    if (mch_getenv((char_u *)"COLORS") == NULL)
 				may_adjust_color_count(256);
 			}
+
+			/* Detect terminals that set $TERM to something like
+			 * "xterm-256colors"  but are not fully xterm
+			 * compatible. */
+
+			/* Mac Terminal.app sends 1;95;0 */
+			if (version == 95
+				&& STRNCMP(tp + extra - 2, "1;95;0c", 7) == 0)
+			    is_not_xterm = TRUE;
+
+			/* Gnome terminal sends 1;3801;0, 1;4402;0 or 1;2501;0.
+			 * xfce4-terminal sends 1;2802;0.
+			 * screen sends 83;40500;0
+			 * Assuming any version number over 2500 is not an
+			 * xterm (without the limit for rxvt and screen). */
+			if (col >= 2500)
+			    is_not_xterm = TRUE;
+
+			/* PuTTY sends 0;136;0
+			 * vandyke SecureCRT sends 1;136;0 */
+			if (version == 136
+				&& STRNCMP(tp + extra - 1, ";136;0c", 7) == 0)
+			    is_not_xterm = TRUE;
+
+			/* Konsole sends 0;115;0 */
+			if (version == 115
+				&& STRNCMP(tp + extra - 2, "0;115;0c", 8) == 0)
+			    is_not_xterm = TRUE;
+
+			/* Only request the cursor style if t_SH and t_RS are
+			 * set. Not for Terminal.app, it can't handle t_RS, it
+			 * echoes the characters to the screen. */
+			if (rcs_status == STATUS_GET
+				&& !is_not_xterm
+				&& *T_CSH != NUL
+				&& *T_CRS != NUL)
+			{
+			    LOG_TR("Sending cursor style request");
+			    out_str(T_CRS);
+			    rcs_status = STATUS_SENT;
+			    need_flush = TRUE;
+			}
+
+			/* Only request the cursor blink mode if t_RC set. Not
+			 * for Gnome terminal, it can't handle t_RC, it
+			 * echoes the characters to the screen. */
+			if (rbm_status == STATUS_GET
+				&& !is_not_xterm
+				&& *T_CRC != NUL)
+			{
+			    LOG_TR("Sending cursor blink mode request");
+			    out_str(T_CRC);
+			    rbm_status = STATUS_SENT;
+			    need_flush = TRUE;
+			}
+
+			if (need_flush)
+			    out_flush();
 		    }
+		    slen = i + 1;
 # ifdef FEAT_EVAL
-		    set_vim_var_string(VV_TERMRESPONSE, tp, i + 1);
+		    set_vim_var_string(VV_TERMRESPONSE, tp, slen);
 # endif
 # ifdef FEAT_AUTOCMD
 		    apply_autocmds(EVENT_TERMRESPONSE,
@@ -4497,7 +4631,32 @@ check_termcode(
 # endif
 		    key_name[0] = (int)KS_EXTRA;
 		    key_name[1] = (int)KE_IGNORE;
+		}
+
+		/* Check blinking cursor from xterm:
+		 * {lead}?12;1$y       set
+		 * {lead}?12;2$y       not set
+		 *
+		 * {lead} can be <Esc>[ or CSI
+		 */
+		else if (rbm_status == STATUS_SENT
+			&& tp[(j = 1 + (tp[0] == ESC))] == '?'
+			&& i == j + 6
+			&& tp[j + 1] == '1'
+			&& tp[j + 2] == '2'
+			&& tp[j + 3] == ';'
+			&& tp[i - 1] == '$'
+			&& tp[i] == 'y')
+		{
+		    initial_cursor_blink = (tp[j + 4] == '1');
+		    rbm_status = STATUS_GOT;
+		    LOG_TR("Received cursor blinking mode response");
+		    key_name[0] = (int)KS_EXTRA;
+		    key_name[1] = (int)KE_IGNORE;
 		    slen = i + 1;
+# ifdef FEAT_EVAL
+		    set_vim_var_string(VV_TERMBLINKRESP, tp, slen);
+# endif
 		}
 
 		/*
@@ -4566,8 +4725,8 @@ check_termcode(
 			    char *newval = (3 * '6' < tp[j+7] + tp[j+12]
 						+ tp[j+17]) ? "light" : "dark";
 
-			    LOG_TR("Received RBG");
-			    rbg_status = RBG_GOT;
+			    LOG_TR("Received RBG response");
+			    rbg_status = STATUS_GOT;
 			    if (STRCMP(p_bg, newval) != 0)
 			    {
 				/* value differs, apply it */
@@ -4582,6 +4741,14 @@ check_termcode(
 			key_name[0] = (int)KS_EXTRA;
 			key_name[1] = (int)KE_IGNORE;
 			slen = i + 1 + (tp[i] == ESC);
+			if (rcs_status == STATUS_SENT
+					     && slen < len && tp[slen] == 0x18)
+			    /* Some older xterm send 0x18 for the T_RS request,
+			     * skip it here. */
+			    ++slen;
+# ifdef FEAT_EVAL
+			set_vim_var_string(VV_TERMRGBRESP, tp, slen);
+# endif
 			break;
 		    }
 		if (i == len)
@@ -4592,24 +4759,33 @@ check_termcode(
 	    }
 
 	    /* Check for key code response from xterm:
-	     *
 	     * {lead}{flag}+r<hex bytes><{tail}
 	     *
 	     * {lead} can be <Esc>P or DCS
 	     * {flag} can be '0' or '1'
 	     * {tail} can be Esc>\ or STERM
 	     *
-	     * Consume any code that starts with "{lead}.+r".
+	     * Check for cursor shape response from xterm:
+	     * {lead}1$r<number> q{tail}
+	     *
+	     * {lead} can be <Esc>P or DCS
+	     * {tail} can be Esc>\ or STERM
+	     *
+	     * Consume any code that starts with "{lead}.+r" or "{lead}.$r".
 	     */
-	    else if (check_for_codes
+	    else if ((check_for_codes || rcs_status == STATUS_SENT)
 		    && ((tp[0] == ESC && len >= 2 && tp[1] == 'P')
 			|| tp[0] == DCS))
 	    {
 		j = 1 + (tp[0] == ESC);
-		if (len >= j + 3 && (argp[1] != '+' || argp[2] != 'r'))
+		if (len < j + 3)
+		    i = len; /* need more chars */
+		else if ((argp[1] != '+' && argp[1] != '$') || argp[2] != 'r')
 		  i = 0; /* no match */
-		else
+		else if (argp[1] == '+')
+		  /* key code response */
 		  for (i = j; i < len; ++i)
+		  {
 		    if ((tp[i] == ESC && i + 1 < len && tp[i + 1] == '\\')
 			    || tp[i] == STERM)
 		    {
@@ -4618,8 +4794,45 @@ check_termcode(
 			key_name[0] = (int)KS_EXTRA;
 			key_name[1] = (int)KE_IGNORE;
 			slen = i + 1 + (tp[i] == ESC);
+			if (rcs_status == STATUS_SENT
+					     && slen < len && tp[slen] == 0x18)
+			    /* Some older xterm send 0x18 for the T_RS request,
+			     * skip it here. */
+			    ++slen;
 			break;
 		    }
+		  }
+		else if ((len >= j + 6 && isdigit(argp[3]))
+			&& argp[4] == ' '
+			&& argp[5] == 'q')
+		{
+		    /* cursor shape response */
+		    i = j + 6;
+		    if ((tp[i] == ESC && i + 1 < len && tp[i + 1] == '\\')
+			    || tp[i] == STERM)
+		    {
+			int number = argp[3] - '0';
+
+			/* 0, 1 = block blink, 2 = block
+			 * 3 = underline blink, 4 = underline
+			 * 5 = vertical bar blink, 6 = vertical bar */
+			number = number == 0 ? 1 : number;
+			initial_cursor_shape = (number + 1) / 2;
+			/* The blink flag is actually inverted, compared to
+			 * the value set with T_SH. */
+			initial_cursor_shape_blink =
+						   (number & 1) ? FALSE : TRUE;
+			rcs_status = STATUS_GOT;
+			LOG_TR("Received cursor shape response");
+
+			key_name[0] = (int)KS_EXTRA;
+			key_name[1] = (int)KE_IGNORE;
+			slen = i + 1 + (tp[i] == ESC);
+# ifdef FEAT_EVAL
+			set_vim_var_string(VV_TERMSTYLERESP, tp, slen);
+# endif
+		    }
+		}
 
 		if (i == len)
 		{
@@ -5837,7 +6050,7 @@ gather_termleader(void)
 	termleader[len++] = CSI;    /* the GUI codes are not in termcodes[] */
 #endif
 #ifdef FEAT_TERMRESPONSE
-    if (check_for_codes)
+    if (check_for_codes || *T_CRS != NUL)
 	termleader[len++] = DCS;    /* the termcode response starts with DCS
 				       in 8-bit mode */
 #endif

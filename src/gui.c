@@ -2396,6 +2396,7 @@ gui_outstr_nowrap(
     /* Do we underline the text? */
     if (hl_mask_todo & HL_UNDERLINE)
 	draw_flags |= DRAW_UNDERL;
+
 #else
     /* Do we underline the text? */
     if ((hl_mask_todo & HL_UNDERLINE) || (hl_mask_todo & HL_ITALIC))
@@ -2404,6 +2405,10 @@ gui_outstr_nowrap(
     /* Do we undercurl the text? */
     if (hl_mask_todo & HL_UNDERCURL)
 	draw_flags |= DRAW_UNDERC;
+
+    /* Do we strikethrough the text? */
+    if (hl_mask_todo & HL_STRIKETHROUGH)
+	draw_flags |= DRAW_STRIKE;
 
     /* Do we draw transparently? */
     if (flags & GUI_MON_TRS_CURSOR)
@@ -4933,7 +4938,7 @@ gui_mouse_correct(void)
 }
 
 /*
- * Find window where the mouse pointer "y" coordinate is in.
+ * Find window where the mouse pointer "x" / "y" coordinate is in.
  */
     static win_T *
 xy2win(int x UNUSED, int y UNUSED)
@@ -4948,6 +4953,8 @@ xy2win(int x UNUSED, int y UNUSED)
     if (row < 0 || col < 0)		/* before first window */
 	return NULL;
     wp = mouse_find_win(&row, &col);
+    if (wp == NULL)
+	return NULL;
 # ifdef FEAT_MOUSESHAPE
     if (State == HITRETURN || State == ASKMORE)
     {

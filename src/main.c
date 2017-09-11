@@ -2473,10 +2473,10 @@ scripterror:
 	     */
 	    if (vim_strpbrk(p, "\\:") != NULL && !path_with_url(p))
 	    {
-		char posix_path[PATH_MAX];
+		char posix_path[MAXPATHL];
 
 # if CYGWIN_VERSION_DLL_MAJOR >= 1007
-		cygwin_conv_path(CCP_WIN_A_TO_POSIX, p, posix_path, PATH_MAX);
+		cygwin_conv_path(CCP_WIN_A_TO_POSIX, p, posix_path, MAXPATHL);
 # else
 		cygwin_conv_to_posix_path(p, posix_path);
 # endif
@@ -3597,36 +3597,35 @@ set_progpath(char_u *argv0)
 {
     char_u *val = argv0;
 
-# ifdef PROC_EXE_LINK
-    char    buf[PATH_MAX + 1];
-    ssize_t len;
-
-    len = readlink(PROC_EXE_LINK, buf, PATH_MAX);
-    if (len > 0)
-    {
-	buf[len] = NUL;
-	val = (char_u *)buf;
-    }
-# else
+# if defined(WIN32)
     /* A relative path containing a "/" will become invalid when using ":cd",
      * turn it into a full path.
      * On MS-Windows "vim" should be expanded to "vim.exe", thus always do
      * this. */
-#  ifdef WIN32
     char_u *path = NULL;
 
     if (mch_can_exe(argv0, &path, FALSE) && path != NULL)
 	val = path;
-#  else
-    char_u buf[MAXPATHL];
+# else
+    char_u	buf[MAXPATHL + 1];
+#  ifdef PROC_EXE_LINK
+    char	linkbuf[MAXPATHL + 1];
+    ssize_t	len;
 
-    if (!mch_isFullName(argv0))
+    len = readlink(PROC_EXE_LINK, linkbuf, MAXPATHL);
+    if (len > 0)
     {
-	if (gettail(argv0) != argv0
-			   && vim_FullName(argv0, buf, MAXPATHL, TRUE) != FAIL)
-	    val = buf;
+	linkbuf[len] = NUL;
+	val = (char_u *)linkbuf;
     }
 #  endif
+
+    if (!mch_isFullName(val))
+    {
+	if (gettail(val) != val
+			   && vim_FullName(val, buf, MAXPATHL, TRUE) != FAIL)
+	    val = buf;
+    }
 # endif
 
     set_vim_var_string(VV_PROGPATH, val, -1);
