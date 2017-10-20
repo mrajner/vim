@@ -1,6 +1,5 @@
 " Test for various Normal mode commands
 
-set belloff=all
 func! Setup_NewWindow()
   10new
   call setline(1, range(1,100))
@@ -2248,7 +2247,7 @@ func! Test_normal49_counts()
 endfunc
 
 func! Test_normal50_commandline()
-  if !has("timers") || !has("cmdline_hist") || !has("vertsplit")
+  if !has("timers") || !has("cmdline_hist")
     return
   endif
   func! DoTimerWork(id)

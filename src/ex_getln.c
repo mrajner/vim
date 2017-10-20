@@ -145,6 +145,19 @@ sort_func_compare(const void *s1, const void *s2);
 static void set_search_match(pos_T *t);
 #endif
 
+
+#ifdef FEAT_AUTOCMD
+    static void
+trigger_cmd_autocmd(int typechar, int evt)
+{
+    char_u	typestr[2];
+
+    typestr[0] = typechar;
+    typestr[1] = NUL;
+    apply_autocmds(evt, typestr, typestr, FALSE, curbuf);
+}
+#endif
+
 /*
  * getcmdline() - accept a command line starting with firstc.
  *
@@ -221,6 +234,9 @@ getcmdline(
      * current command line in save_ccline.  That includes update_screen(), a
      * custom status line may invoke ":normal". */
     struct cmdline_info save_ccline;
+#endif
+#ifdef FEAT_AUTOCMD
+    int		cmdline_type;
 #endif
 
 #ifdef FEAT_EVAL
@@ -348,6 +364,12 @@ getcmdline(
     /* When inside an autocommand for writing "exiting" may be set and
      * terminal mode set to cooked.  Need to set raw mode here then. */
     settmode(TMODE_RAW);
+
+#ifdef FEAT_AUTOCMD
+    /* Trigger CmdlineEnter autocommands. */
+    cmdline_type = firstc == NUL ? '-' : firstc;
+    trigger_cmd_autocmd(cmdline_type, EVENT_CMDLINEENTER);
+#endif
 
 #ifdef FEAT_CMDHIST
     init_history();
@@ -1125,7 +1147,7 @@ getcmdline(
 #ifdef CURSOR_SHAPE
 		ui_cursor_shape();	/* may show different cursor shape */
 #endif
-#if defined(FEAT_WINDOWS) && defined(FEAT_KEYMAP)
+#if defined(FEAT_KEYMAP)
 		/* Show/unshow value of 'keymap' in status lines later. */
 		status_redraw_curbuf();
 #endif
@@ -1966,11 +1988,9 @@ cmdline_changed:
 		end_pos = curwin->w_cursor; /* shutup gcc 4 */
 
 	    validate_cursor();
-# ifdef FEAT_WINDOWS
 	    /* May redraw the status line to show the cursor position. */
 	    if (p_ru && curwin->w_status_height > 0)
 		curwin->w_redr_status = TRUE;
-# endif
 
 	    save_cmdline(&save_ccline);
 	    update_screen(SOME_VALID);
@@ -2086,6 +2106,11 @@ returncmd:
     /* When the command line was typed, no need for a wait-return prompt. */
     if (some_key_typed)
 	need_wait_return = FALSE;
+
+#ifdef FEAT_AUTOCMD
+    /* Trigger CmdlineLeave autocommands. */
+    trigger_cmd_autocmd(cmdline_type, EVENT_CMDLINELEAVE);
+#endif
 
     State = save_State;
 #ifdef USE_IM_CONTROL
@@ -3440,7 +3465,7 @@ compute_cmdrow(void)
 	cmdline_row = Rows - 1;
     else
 	cmdline_row = W_WINROW(lastwin) + lastwin->w_height
-						   + W_STATUS_HEIGHT(lastwin);
+						    + lastwin->w_status_height;
 }
 
     static void
@@ -6836,9 +6861,6 @@ open_cmdwin(void)
     linenr_T		lnum;
     int			histtype;
     garray_T		winsizes;
-#ifdef FEAT_AUTOCMD
-    char_u		typestr[2];
-#endif
     int			save_restart_edit = restart_edit;
     int			save_State = State;
     int			save_exmode = exmode_active;
@@ -6967,9 +6989,7 @@ open_cmdwin(void)
 
 # ifdef FEAT_AUTOCMD
     /* Trigger CmdwinEnter autocommands. */
-    typestr[0] = cmdwin_type;
-    typestr[1] = NUL;
-    apply_autocmds(EVENT_CMDWINENTER, typestr, typestr, FALSE, curbuf);
+    trigger_cmd_autocmd(cmdwin_type, EVENT_CMDWINENTER);
     if (restart_edit != 0)	/* autocmd with ":startinsert" */
 	stuffcharReadbuff(K_NOP);
 # endif
@@ -6992,7 +7012,7 @@ open_cmdwin(void)
 #  endif
 
     /* Trigger CmdwinLeave autocommands. */
-    apply_autocmds(EVENT_CMDWINLEAVE, typestr, typestr, FALSE, curbuf);
+    trigger_cmd_autocmd(cmdwin_type, EVENT_CMDWINLEAVE);
 
 #  ifdef FEAT_FOLDING
     /* Restore KeyTyped in case it is modified by autocommands */
