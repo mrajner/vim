@@ -38,10 +38,17 @@
  * in tl_scrollback are no longer used.
  *
  * TODO:
- * - patch to use GUI or cterm colors for vterm. Yasuhiro, #2067
- * - patch to add tmap, jakalope (Jacob Askeland) #2073
- * - Redirecting output does not work on MS-Windows.
+ * - in GUI vertical split causes problems.  Cursor is flickering. (Hirohito
+ *   Higashi, 2017 Sep 19)
+ * - double click in Window toolbar starts Visual mode (but not always?).
+ * - Shift-Tab does not work.
+ * - after resizing windows overlap. (Boris Staletic, #2164)
+ * - Redirecting output does not work on MS-Windows, Test_terminal_redir_file()
+ *   is disabled.
+ * - cursor blinks in terminal on widows with a timer. (xtal8, #2142)
  * - implement term_setsize()
+ * - MS-Windows GUI: WinBar has  tearoff item
+ * - MS-Windows GUI: still need to type a key after shell exits?  #1924
  * - add test for giving error for invalid 'termsize' value.
  * - support minimal size when 'termsize' is "rows*cols".
  * - support minimal size when 'termsize' is empty?
@@ -49,13 +56,16 @@
  * - GUI: when 'confirm' is set and trying to exit Vim, dialog offers to save
  *   changes to "!shell".
  *   (justrajdeep, 2017 Aug 22)
+ * - Redrawing is slow with Athena and Motif.  Also other GUI? (Ramel Eshed)
  * - For the GUI fill termios with default values, perhaps like pangoterm:
  *   http://bazaar.launchpad.net/~leonerd/pangoterm/trunk/view/head:/main.c#L134
  * - if the job in the terminal does not support the mouse, we can use the
  *   mouse in the Terminal window for copy/paste.
  * - when 'encoding' is not utf-8, or the job is using another encoding, setup
  *   conversions.
- * - In the GUI use a terminal emulator for :!cmd.
+ * - In the GUI use a terminal emulator for :!cmd.  Make the height the same as
+ *   the window and position it higher up when it gets filled, so it looks like
+ *   the text scrolls up.
  * - Copy text in the vterm to the Vim buffer once in a while, so that
  *   completion works.
  * - add an optional limit for the scrollback size.  When reaching it remove
@@ -96,6 +106,9 @@ struct terminal_S {
     job_T	*tl_job;
     buf_T	*tl_buffer;
 
+    /* Set when setting the size of a vterm, reset after redrawing. */
+    int		tl_vterm_size_changed;
+
     /* used when tl_job is NULL and only a pty was created */
     int		tl_tty_fd;
     char_u	*tl_tty_in;
@@ -123,7 +136,7 @@ struct terminal_S {
     char_u	*tl_status_text; /* NULL or allocated */
 
     /* Range of screen rows to update.  Zero based. */
-    int		tl_dirty_row_start; /* -1 if nothing dirty */
+    int		tl_dirty_row_start; /* MAX_ROW if nothing dirty */
     int		tl_dirty_row_end;   /* row below last one to update */
 
     garray_T	tl_scrollback;
@@ -439,6 +452,12 @@ term_start(typval_T *argvar, jobopt_T *opt, int forceit)
 	 * a deadlock if the job is waiting for Vim to read. */
 	channel_set_nonblock(term->tl_job->jv_channel, PART_IN);
 
+#ifdef FEAT_AUTOCMD
+	++curbuf->b_locked;
+	apply_autocmds(EVENT_BUFWINENTER, NULL, NULL, FALSE, curbuf);
+	--curbuf->b_locked;
+#endif
+
 	if (old_curbuf != NULL)
 	{
 	    --curbuf->b_nwindows;
@@ -701,7 +720,7 @@ write_to_term(buf_T *buffer, char_u *msg, channel_T *channel)
 	    update_screen(0);
 	    update_cursor(term, TRUE);
 	}
-	else if (buffer->b_nwindows > 0)
+	else
 	    redraw_after_callback(TRUE);
     }
 }
@@ -715,7 +734,7 @@ term_send_mouse(VTerm *vterm, int button, int pressed)
     VTermModifier   mod = VTERM_MOD_NONE;
 
     vterm_mouse_move(vterm, mouse_row - W_WINROW(curwin),
-					    mouse_col - W_WINCOL(curwin), mod);
+					    mouse_col - curwin->w_wincol, mod);
     vterm_mouse_button(vterm, button, pressed, mod);
     return TRUE;
 }
@@ -1200,23 +1219,22 @@ term_enter_job_mode()
  * Get a key from the user without mapping.
  * Note: while waiting a terminal may be closed and freed if the channel is
  * closed and ++close was used.
- * TODO: use terminal mode mappings.
+ * Uses terminal mode mappings.
  */
     static int
 term_vgetc()
 {
     int c;
+    int save_State = State;
 
-    ++no_mapping;
-    ++allow_keys;
+    State = TERMINAL;
     got_int = FALSE;
 #ifdef WIN3264
     ctrl_break_was_pressed = FALSE;
 #endif
     c = vgetc();
     got_int = FALSE;
-    --no_mapping;
-    --allow_keys;
+    State = save_State;
     return c;
 }
 
@@ -1294,7 +1312,7 @@ send_keys_to_term(term_T *term, int c, int typed)
 	case K_MOUSERIGHT:
 	    if (mouse_row < W_WINROW(curwin)
 		    || mouse_row >= (W_WINROW(curwin) + curwin->w_height)
-		    || mouse_col < W_WINCOL(curwin)
+		    || mouse_col < curwin->w_wincol
 		    || mouse_col >= W_ENDCOL(curwin)
 		    || dragging_outside)
 	    {
@@ -1405,7 +1423,7 @@ term_paste_register(int prev_c UNUSED)
  * Return TRUE when the cursor of the terminal should be displayed.
  */
     int
-use_terminal_cursor()
+terminal_is_active()
 {
     return in_terminal_loop != NULL;
 }
@@ -1495,13 +1513,15 @@ term_use_loop(void)
 
 /*
  * Wait for input and send it to the job.
+ * When "blocking" is TRUE wait for a character to be typed.  Otherwise return
+ * when there is no more typahead.
  * Return when the start of a CTRL-W command is typed or anything else that
  * should be handled as a Normal mode command.
  * Returns OK if a typed character is to be handled in Normal mode, FAIL if
  * the terminal was closed.
  */
     int
-terminal_loop(void)
+terminal_loop(int blocking)
 {
     int		c;
     int		termkey = 0;
@@ -1538,12 +1558,13 @@ terminal_loop(void)
     }
 #endif
 
-    for (;;)
+    while (blocking || vpeekc() != NUL)
     {
 	/* TODO: skip screen update when handling a sequence of keys. */
 	/* Repeat redrawing in case a message is received while redrawing. */
-	while (curwin->w_redr_type != 0)
-	    update_screen(0);
+	while (must_redraw != 0)
+	    if (update_screen(0) == FAIL)
+		break;
 	update_cursor(curbuf->b_term, FALSE);
 
 	c = term_vgetc();
@@ -1559,7 +1580,7 @@ terminal_loop(void)
 	if (ctrl_break_was_pressed)
 	    mch_signal_job(curbuf->b_term->tl_job, (char_u *)"kill");
 #endif
-
+	/* Was either CTRL-W (termkey) or CTRL-\ pressed? */
 	if (c == (termkey == 0 ? Ctrl_W : termkey) || c == Ctrl_BSL)
 	{
 	    int	    prev_c = c;
@@ -1736,7 +1757,7 @@ color2index(VTermColor *color, int fg, int *boldp)
     else if (red == 128)
     {
 	if (green == 128 && blue == 128)
-	    return lookup_color(12, fg, boldp) + 1; /* high intensity black / dark grey */
+	    return lookup_color(12, fg, boldp) + 1; /* dark grey */
     }
     else if (red == 255)
     {
@@ -1774,23 +1795,38 @@ color2index(VTermColor *color, int fg, int *boldp)
     {
 	if (red == blue && red == green)
 	{
-	    /* 24-color greyscale */
+	    /* 24-color greyscale plus white and black */
 	    static int cutoff[23] = {
-		0x05, 0x10, 0x1B, 0x26, 0x31, 0x3C, 0x47, 0x52,
-		0x5D, 0x68, 0x73, 0x7F, 0x8A, 0x95, 0xA0, 0xAB,
-		0xB6, 0xC1, 0xCC, 0xD7, 0xE2, 0xED, 0xF9};
+		    0x0D, 0x17, 0x21, 0x2B, 0x35, 0x3F, 0x49, 0x53, 0x5D, 0x67,
+		    0x71, 0x7B, 0x85, 0x8F, 0x99, 0xA3, 0xAD, 0xB7, 0xC1, 0xCB,
+		    0xD5, 0xDF, 0xE9};
 	    int i;
 
+	    if (red < 5)
+		return 17; /* 00/00/00 */
+	    if (red > 245) /* ff/ff/ff */
+		return 232;
 	    for (i = 0; i < 23; ++i)
 		if (red < cutoff[i])
 		    return i + 233;
 	    return 256;
 	}
+	{
+	    static int cutoff[5] = {0x2F, 0x73, 0x9B, 0xC3, 0xEB};
+	    int ri, gi, bi;
 
-	/* 216-color cube */
-	return 17 + ((red + 25) / 0x33) * 36
-		  + ((green + 25) / 0x33) * 6
-		  + (blue + 25) / 0x33;
+	    /* 216-color cube */
+	    for (ri = 0; ri < 5; ++ri)
+		if (red < cutoff[ri])
+		    break;
+	    for (gi = 0; gi < 5; ++gi)
+		if (green < cutoff[gi])
+		    break;
+	    for (bi = 0; bi < 5; ++bi)
+		if (blue < cutoff[bi])
+		    break;
+	    return 17 + ri * 36 + gi * 6 + bi;
+	}
     }
     return 0;
 }
@@ -1891,6 +1927,10 @@ handle_moverect(VTermRect dest, VTermRect src, void *user)
 				 clear_attr);
 	}
     }
+
+    term->tl_dirty_row_start = MIN(term->tl_dirty_row_start, dest.start_row);
+    term->tl_dirty_row_end = MIN(term->tl_dirty_row_end, dest.end_row);
+
     redraw_buf_later(term->tl_buffer, NOT_VALID);
     return 1;
 }
@@ -2012,16 +2052,21 @@ handle_resize(int rows, int cols, void *user)
 
     term->tl_rows = rows;
     term->tl_cols = cols;
-    FOR_ALL_WINDOWS(wp)
+    if (term->tl_vterm_size_changed)
+	/* Size was set by vterm_set_size(), don't set the window size. */
+	term->tl_vterm_size_changed = FALSE;
+    else
     {
-	if (wp->w_buffer == term->tl_buffer)
+	FOR_ALL_WINDOWS(wp)
 	{
-	    win_setheight_win(rows, wp);
-	    win_setwidth_win(cols, wp);
+	    if (wp->w_buffer == term->tl_buffer)
+	    {
+		win_setheight_win(rows, wp);
+		win_setwidth_win(cols, wp);
+	    }
 	}
+	redraw_buf_later(term->tl_buffer, NOT_VALID);
     }
-
-    redraw_buf_later(term->tl_buffer, NOT_VALID);
     return 1;
 }
 
@@ -2194,6 +2239,12 @@ term_update_window(win_T *wp)
     screen = vterm_obtain_screen(vterm);
     state = vterm_obtain_state(vterm);
 
+    if (wp->w_redr_type >= SOME_VALID)
+    {
+	term->tl_dirty_row_start = 0;
+	term->tl_dirty_row_end = MAX_ROW;
+    }
+
     /*
      * If the window was resized a redraw will be triggered and we get here.
      * Adjust the size of the vterm unless 'termsize' specifies a fixed size.
@@ -2218,6 +2269,7 @@ term_update_window(win_T *wp)
 	    }
 	}
 
+	term->tl_vterm_size_changed = TRUE;
 	vterm_set_size(vterm, rows, cols);
 	ch_log(term->tl_job->jv_channel, "Resizing terminal to %d lines",
 									 rows);
@@ -2228,8 +2280,8 @@ term_update_window(win_T *wp)
     vterm_state_get_cursorpos(state, &pos);
     position_cursor(wp, &pos);
 
-    /* TODO: Only redraw what changed. */
-    for (pos.row = 0; pos.row < wp->w_height; ++pos.row)
+    for (pos.row = term->tl_dirty_row_start; pos.row < term->tl_dirty_row_end
+					  && pos.row < wp->w_height; ++pos.row)
     {
 	int off = screen_get_current_line_off();
 	int max_col = MIN(wp->w_width, term->tl_cols);
@@ -2244,7 +2296,6 @@ term_update_window(win_T *wp)
 		if (vterm_screen_get_cell(screen, pos, &cell) == 0)
 		    vim_memset(&cell, 0, sizeof(cell));
 
-		/* TODO: composing chars */
 		c = cell.chars[0];
 		if (c == NUL)
 		{
@@ -2256,7 +2307,18 @@ term_update_window(win_T *wp)
 		{
 		    if (enc_utf8)
 		    {
-			if (c >= 0x80)
+			int i;
+
+			/* composing chars */
+			for (i = 0; i < Screen_mco
+				      && i + 1 < VTERM_MAX_CHARS_PER_CELL; ++i)
+			{
+			    ScreenLinesC[i][off] = cell.chars[i + 1];
+			    if (cell.chars[i + 1] == 0)
+				break;
+			}
+			if (c >= 0x80 || (Screen_mco > 0
+						 && ScreenLinesC[0][off] != 0))
 			{
 			    ScreenLines[off] = ' ';
 			    ScreenLinesUC[off] = c;
@@ -2312,6 +2374,8 @@ term_update_window(win_T *wp)
 	screen_line(wp->w_winrow + pos.row, wp->w_wincol,
 						  pos.col, wp->w_width, FALSE);
     }
+    term->tl_dirty_row_start = MAX_ROW;
+    term->tl_dirty_row_end = 0;
 
     return OK;
 }
@@ -2382,6 +2446,66 @@ term_get_attr(buf_T *buf, linenr_T lnum, int col)
     return cell2attr(cellattr->attrs, cellattr->fg, cellattr->bg);
 }
 
+static VTermColor ansi_table[16] = {
+  {  0,   0,   0}, /* black */
+  {224,   0,   0}, /* dark red */
+  {  0, 224,   0}, /* dark green */
+  {224, 224,   0}, /* dark yellow / brown */
+  {  0,   0, 224}, /* dark blue */
+  {224,   0, 224}, /* dark magenta */
+  {  0, 224, 224}, /* dark cyan */
+  {224, 224, 224}, /* light grey */
+
+  {128, 128, 128}, /* dark grey */
+  {255,  64,  64}, /* light red */
+  { 64, 255,  64}, /* light green */
+  {255, 255,  64}, /* yellow */
+  { 64,  64, 255}, /* light blue */
+  {255,  64, 255}, /* light magenta */
+  { 64, 255, 255}, /* light cyan */
+  {255, 255, 255}, /* white */
+};
+
+static int cube_value[] = {
+    0x00, 0x5F, 0x87, 0xAF, 0xD7, 0xFF
+};
+
+static int grey_ramp[] = {
+    0x08, 0x12, 0x1C, 0x26, 0x30, 0x3A, 0x44, 0x4E, 0x58, 0x62, 0x6C, 0x76,
+    0x80, 0x8A, 0x94, 0x9E, 0xA8, 0xB2, 0xBC, 0xC6, 0xD0, 0xDA, 0xE4, 0xEE
+};
+
+/*
+ * Convert a cterm color number 0 - 255 to RGB.
+ * This is compatible with xterm.
+ */
+    static void
+cterm_color2rgb(int nr, VTermColor *rgb)
+{
+    int idx;
+
+    if (nr < 16)
+    {
+	*rgb = ansi_table[nr];
+    }
+    else if (nr < 232)
+    {
+	/* 216 color cube */
+	idx = nr - 16;
+	rgb->blue  = cube_value[idx      % 6];
+	rgb->green = cube_value[idx / 6  % 6];
+	rgb->red   = cube_value[idx / 36 % 6];
+    }
+    else if (nr < 256)
+    {
+	/* 24 grey scale ramp */
+	idx = nr - 232;
+	rgb->blue  = grey_ramp[idx];
+	rgb->green = grey_ramp[idx];
+	rgb->red   = grey_ramp[idx];
+    }
+}
+
 /*
  * Create a new vterm and initialize it.
  */
@@ -2393,6 +2517,7 @@ create_vterm(term_T *term, int rows, int cols)
     VTermValue	    value;
     VTermColor	    *fg, *bg;
     int		    fgval, bgval;
+    int		    id;
 
     vterm = vterm_new(rows, cols);
     term->tl_vterm = vterm;
@@ -2401,12 +2526,13 @@ create_vterm(term_T *term, int rows, int cols)
     /* TODO: depends on 'encoding'. */
     vterm_set_utf8(vterm, 1);
 
-    /* Vterm uses a default black background.  Set it to white when
-     * 'background' is "light". */
     vim_memset(&term->tl_default_color.attrs, 0, sizeof(VTermScreenCellAttrs));
     term->tl_default_color.width = 1;
     fg = &term->tl_default_color.fg;
     bg = &term->tl_default_color.bg;
+
+    /* Vterm uses a default black background.  Set it to white when
+     * 'background' is "light". */
     if (*p_bg == 'l')
     {
 	fgval = 0;
@@ -2419,6 +2545,112 @@ create_vterm(term_T *term, int rows, int cols)
     }
     fg->red = fg->green = fg->blue = fgval;
     bg->red = bg->green = bg->blue = bgval;
+
+    /* The "Terminal" highlight group overrules the defaults. */
+    id = syn_name2id((char_u *)"Terminal");
+
+    /* Use the actual color for the GUI and when 'guitermcolors' is set. */
+#if defined(FEAT_GUI) || defined(FEAT_TERMGUICOLORS)
+    if (0
+# ifdef FEAT_GUI
+	    || gui.in_use
+# endif
+# ifdef FEAT_TERMGUICOLORS
+	    || p_tgc
+# endif
+       )
+    {
+	guicolor_T	fg_rgb = INVALCOLOR;
+	guicolor_T	bg_rgb = INVALCOLOR;
+
+	if (id != 0)
+	    syn_id2colors(id, &fg_rgb, &bg_rgb);
+
+# ifdef FEAT_GUI
+	if (gui.in_use)
+	{
+	    if (fg_rgb == INVALCOLOR)
+		fg_rgb = gui.norm_pixel;
+	    if (bg_rgb == INVALCOLOR)
+		bg_rgb = gui.back_pixel;
+	}
+#  ifdef FEAT_TERMGUICOLORS
+	else
+#  endif
+# endif
+# ifdef FEAT_TERMGUICOLORS
+	{
+	    if (fg_rgb == INVALCOLOR)
+		fg_rgb = cterm_normal_fg_gui_color;
+	    if (bg_rgb == INVALCOLOR)
+		bg_rgb = cterm_normal_bg_gui_color;
+	}
+# endif
+	if (fg_rgb != INVALCOLOR)
+	{
+	    long_u rgb = GUI_MCH_GET_RGB(fg_rgb);
+
+	    fg->red = (unsigned)(rgb >> 16);
+	    fg->green = (unsigned)(rgb >> 8) & 255;
+	    fg->blue = (unsigned)rgb & 255;
+	}
+	if (bg_rgb != INVALCOLOR)
+	{
+	    long_u rgb = GUI_MCH_GET_RGB(bg_rgb);
+
+	    bg->red = (unsigned)(rgb >> 16);
+	    bg->green = (unsigned)(rgb >> 8) & 255;
+	    bg->blue = (unsigned)rgb & 255;
+	}
+    }
+    else
+#endif
+    if (id != 0 && t_colors >= 16)
+    {
+	int cterm_fg, cterm_bg;
+
+	syn_id2cterm_bg(id, &cterm_fg, &cterm_bg);
+	if (cterm_fg >= 0)
+	    cterm_color2rgb(cterm_fg, fg);
+	if (cterm_bg >= 0)
+	    cterm_color2rgb(cterm_bg, bg);
+    }
+    else
+    {
+#if defined(WIN3264) && !defined(FEAT_GUI_W32)
+	int tmp;
+#endif
+
+	/* In an MS-Windows console we know the normal colors. */
+	if (cterm_normal_fg_color > 0)
+	{
+	    cterm_color2rgb(cterm_normal_fg_color - 1, fg);
+# if defined(WIN3264) && !defined(FEAT_GUI_W32)
+	    tmp = fg->red;
+	    fg->red = fg->blue;
+	    fg->blue = tmp;
+# endif
+	}
+# ifdef FEAT_TERMRESPONSE
+	else
+	    term_get_fg_color(&fg->red, &fg->green, &fg->blue);
+# endif
+
+	if (cterm_normal_bg_color > 0)
+	{
+	    cterm_color2rgb(cterm_normal_bg_color - 1, bg);
+# if defined(WIN3264) && !defined(FEAT_GUI_W32)
+	    tmp = bg->red;
+	    bg->red = bg->blue;
+	    bg->blue = tmp;
+# endif
+	}
+# ifdef FEAT_TERMRESPONSE
+	else
+	    term_get_bg_color(&bg->red, &bg->green, &bg->blue);
+# endif
+    }
+
     vterm_state_set_default_colors(vterm_obtain_state(vterm), fg, bg);
 
     /* Required to initialize most things. */
@@ -2932,7 +3164,7 @@ f_term_sendkeys(typval_T *argvars, typval_T *rettv)
     while (*msg != NUL)
     {
 	send_keys_to_term(term, PTR2CHAR(msg), FALSE);
-	msg += MB_PTR2LEN(msg);
+	msg += MB_CPTR2LEN(msg);
     }
 }
 
