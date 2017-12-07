@@ -220,7 +220,7 @@ getcmdline(
     pos_T       match_end;
 # ifdef FEAT_DIFF
     int		old_topfill;
-    int         init_topfill = curwin->w_topfill;
+    int		init_topfill = curwin->w_topfill;
 # endif
     linenr_T	old_botline;
     linenr_T	init_botline = curwin->w_botline;
@@ -359,11 +359,11 @@ getcmdline(
 	    b_im_ptr = &curbuf->b_p_imsearch;
 	if (*b_im_ptr == B_IMODE_LMAP)
 	    State |= LANGMAP;
-#ifdef USE_IM_CONTROL
+#ifdef FEAT_MBYTE
 	im_set_active(*b_im_ptr == B_IMODE_IM);
 #endif
     }
-#ifdef USE_IM_CONTROL
+#ifdef FEAT_MBYTE
     else if (p_imcmdline)
 	im_set_active(TRUE);
 #endif
@@ -417,12 +417,12 @@ getcmdline(
 
 	cursorcmd();		/* set the cursor on the right spot */
 
-	/* Get a character.  Ignore K_IGNORE, it should not do anything, such
-	 * as stop completion. */
+	/* Get a character.  Ignore K_IGNORE and K_NOP, they should not do
+	 * anything, such as stop completion. */
 	do
 	{
 	    c = safe_vgetc();
-	} while (c == K_IGNORE);
+	} while (c == K_IGNORE || c == K_NOP);
 
 	if (KeyTyped)
 	{
@@ -1119,7 +1119,7 @@ getcmdline(
 		{
 		    /* ":lmap" mappings exists, toggle use of mappings. */
 		    State ^= LANGMAP;
-#ifdef USE_IM_CONTROL
+#ifdef FEAT_MBYTE
 		    im_set_active(FALSE);	/* Disable input method */
 #endif
 		    if (b_im_ptr != NULL)
@@ -1130,7 +1130,7 @@ getcmdline(
 			    *b_im_ptr = B_IMODE_NONE;
 		    }
 		}
-#ifdef USE_IM_CONTROL
+#ifdef FEAT_MBYTE
 		else
 		{
 		    /* There are no ":lmap" mappings, toggle IM.  When
@@ -1452,6 +1452,7 @@ getcmdline(
 	case K_X2MOUSE:
 	case K_X2DRAG:
 	case K_X2RELEASE:
+	case K_MOUSEMOVE:
 		goto cmdline_not_changed;
 
 #endif	/* FEAT_MOUSE */
@@ -1563,9 +1564,8 @@ getcmdline(
 			break;
 		    goto cmdline_not_changed;
 		}
-		/* FALLTHROUGH */
-
 #ifdef FEAT_CMDHIST
+		/* FALLTHROUGH */
 	case K_UP:
 	case K_DOWN:
 	case K_S_UP:
@@ -1716,21 +1716,37 @@ getcmdline(
 		if (p_is && !cmd_silent && (firstc == '/' || firstc == '?'))
 		{
 		    pos_T  t;
-		    int    search_flags = SEARCH_KEEP + SEARCH_NOOF;
+		    char_u *pat;
+		    int    search_flags = SEARCH_NOOF;
 
+		    if (ccline.cmdlen == 0)
+			goto cmdline_not_changed;
+
+		    if (firstc == ccline.cmdbuff[0])
+			pat = last_search_pattern();
+		    else
+			pat = ccline.cmdbuff;
+
+		    save_last_search_pattern();
 		    cursor_off();
 		    out_flush();
 		    if (c == Ctrl_G)
 		    {
 			t = match_end;
+			if (LT_POS(match_start, match_end))
+			    /* start searching at the end of the match
+			     * not at the beginning of the next column */
+			    (void)decl(&t);
 			search_flags += SEARCH_COL;
 		    }
 		    else
 			t = match_start;
+		    if (!p_hls)
+			search_flags += SEARCH_KEEP;
 		    ++emsg_off;
 		    i = searchit(curwin, curbuf, &t,
 				 c == Ctrl_G ? FORWARD : BACKWARD,
-				 ccline.cmdbuff, count, search_flags,
+				 pat, count, search_flags,
 				 RE_SEARCH, 0, NULL, NULL);
 		    --emsg_off;
 		    if (i)
@@ -1778,6 +1794,7 @@ getcmdline(
 # endif
 			old_botline = curwin->w_botline;
 			update_screen(NOT_VALID);
+			restore_last_search_pattern();
 			redrawcmdline();
 		    }
 		    else
@@ -1935,12 +1952,18 @@ cmdline_changed:
 	    }
 	    incsearch_postponed = FALSE;
 	    curwin->w_cursor = search_start;  /* start at old position */
+	    save_last_search_pattern();
 
 	    /* If there is no command line, don't do anything */
 	    if (ccline.cmdlen == 0)
+	    {
 		i = 0;
+		SET_NO_HLSEARCH(TRUE); /* turn off previous highlight */
+		redraw_all_later(SOME_VALID);
+	    }
 	    else
 	    {
+		int search_flags = SEARCH_OPT + SEARCH_NOOF + SEARCH_PEEK;
 		cursor_off();		/* so the user knows we're busy */
 		out_flush();
 		++emsg_off;    /* So it doesn't beep if bad expr */
@@ -1948,8 +1971,10 @@ cmdline_changed:
 		/* Set the time limit to half a second. */
 		profile_setlimit(500L, &tm);
 #endif
+		if (!p_hls)
+		    search_flags += SEARCH_KEEP;
 		i = do_search(NULL, firstc, ccline.cmdbuff, count,
-			SEARCH_KEEP + SEARCH_OPT + SEARCH_NOOF + SEARCH_PEEK,
+			search_flags,
 #ifdef FEAT_RELTIME
 			&tm, NULL
 #else
@@ -2006,6 +2031,7 @@ cmdline_changed:
 	    save_cmdline(&save_ccline);
 	    update_screen(SOME_VALID);
 	    restore_cmdline(&save_ccline);
+	    restore_last_search_pattern();
 
 	    /* Leave it at the end to make CTRL-R CTRL-W work. */
 	    if (i != 0)
@@ -2071,7 +2097,7 @@ returncmd:
 	curwin->w_botline = old_botline;
 	highlight_match = FALSE;
 	validate_cursor();	/* needed for TAB */
-	redraw_later(SOME_VALID);
+	redraw_all_later(SOME_VALID);
     }
 #endif
 
@@ -2117,7 +2143,7 @@ returncmd:
 #endif
 
     State = save_State;
-#ifdef USE_IM_CONTROL
+#ifdef FEAT_MBYTE
     if (b_im_ptr != NULL && *b_im_ptr != B_IMODE_LMAP)
 	im_save_status(b_im_ptr);
     im_set_active(FALSE);

@@ -4115,7 +4115,7 @@ set_one_cmd_context(
 	case CMD_bunload:
 	    while ((xp->xp_pattern = vim_strchr(arg, ' ')) != NULL)
 		arg = xp->xp_pattern + 1;
-	    /*FALLTHROUGH*/
+	    /* FALLTHROUGH */
 	case CMD_buffer:
 	case CMD_sbuffer:
 	case CMD_checktime:
@@ -10715,9 +10715,12 @@ eval_vars(
 		if (*s == '<')		/* "#<99" uses v:oldfiles */
 		    ++s;
 		i = (int)getdigits(&s);
+		if (s == src + 2 && src[1] == '-')
+		    /* just a minus sign, don't skip over it */
+		    s--;
 		*usedlen = (int)(s - src); /* length of what we expand */
 
-		if (src[1] == '<')
+		if (src[1] == '<' && i != 0)
 		{
 		    if (*usedlen < 2)
 		    {
@@ -10740,6 +10743,8 @@ eval_vars(
 		}
 		else
 		{
+		    if (i == 0 && src[1] == '<' && *usedlen > 1)
+			*usedlen = 1;
 		    buf = buflist_findnr(i);
 		    if (buf == NULL)
 		    {
@@ -11690,9 +11695,11 @@ put_view(
     }
 
     /*
-     * Local directory.
+     * Local directory, if the current flag is not view options or the "curdir"
+     * option is included.
      */
-    if (wp->w_localdir != NULL)
+    if (wp->w_localdir != NULL
+			    && (flagp != &vop_flags || (*flagp & SSOP_CURDIR)))
     {
 	if (fputs("lcd ", fd) < 0
 		|| ses_put_fname(fd, wp->w_localdir, flagp) == FAIL

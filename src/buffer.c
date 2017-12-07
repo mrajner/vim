@@ -593,6 +593,11 @@ aucmd_abort:
     if (buf->b_nwindows > 0)
 	--buf->b_nwindows;
 
+#ifdef FEAT_DIFF
+    if (diffopt_hiddenoff() && !unload_buf && buf->b_nwindows == 0)
+    	diff_buf_delete(buf);	/* Clear 'diff' for hidden buffer. */
+#endif
+
     /* Return when a window is displaying the buffer or when it's not
      * unloaded. */
     if (buf->b_nwindows > 0 || !unload_buf)
@@ -4028,9 +4033,14 @@ build_stl_str_hl(
 		/* remove group if all items are empty and highlight group
 		 * doesn't change */
 		group_start_userhl = group_end_userhl = 0;
-		for (n = 0; n < groupitem[groupdepth]; n++)
+		for (n = groupitem[groupdepth] - 1; n >= 0; n--)
+		{
 		    if (item[n].type == Highlight)
-			group_start_userhl = item[n].minwid;
+		    {
+			group_start_userhl = group_end_userhl = item[n].minwid;
+			break;
+		    }
+		}
 		for (n = groupitem[groupdepth] + 1; n < curitem; n++)
 		{
 		    if (item[n].type == Normal)
@@ -4325,6 +4335,7 @@ build_stl_str_hl(
 
 	case STL_OFFSET_X:
 	    base = 'X';
+	    /* FALLTHROUGH */
 	case STL_OFFSET:
 #ifdef FEAT_BYTEOFF
 	    l = ml_find_line_or_offset(wp->w_buffer, wp->w_cursor.lnum, NULL);
@@ -4336,6 +4347,7 @@ build_stl_str_hl(
 
 	case STL_BYTEVAL_X:
 	    base = 'X';
+	    /* FALLTHROUGH */
 	case STL_BYTEVAL:
 	    num = byteval;
 	    if (num == NL)
