@@ -1177,8 +1177,7 @@ qf_init_ext(
     int		    status;
 
     /* Do not used the cached buffer, it may have been wiped out. */
-    vim_free(qf_last_bufname);
-    qf_last_bufname = NULL;
+    VIM_CLEAR(qf_last_bufname);
 
     vim_memset(&state, 0, sizeof(state));
     vim_memset(&fields, 0, sizeof(fields));
@@ -1229,8 +1228,7 @@ qf_init_ext(
     if (last_efm == NULL || (STRCMP(last_efm, efm) != 0))
     {
 	/* free the previously parsed data */
-	vim_free(last_efm);
-	last_efm = NULL;
+	VIM_CLEAR(last_efm);
 	free_efm_list(&fmt_first);
 
 	/* parse the current 'efm' */
@@ -1351,8 +1349,7 @@ qf_init_end:
     static void
 qf_store_title(qf_info_T *qi, int qf_idx, char_u *title)
 {
-    vim_free(qi->qf_lists[qf_idx].qf_title);
-    qi->qf_lists[qf_idx].qf_title = NULL;
+    VIM_CLEAR(qi->qf_lists[qf_idx].qf_title);
 
     if (title != NULL)
     {
@@ -3003,8 +3000,7 @@ qf_free(qf_info_T *qi, int idx)
 
     qf_free_items(qi, idx);
 
-    vim_free(qfl->qf_title);
-    qfl->qf_title = NULL;
+    VIM_CLEAR(qfl->qf_title);
     free_tv(qfl->qf_ctx);
     qfl->qf_ctx = NULL;
     qfl->qf_id = 0;
@@ -3421,7 +3417,7 @@ is_qf_win(win_T *win, qf_info_T *qi)
 
 /*
  * Find a window displaying the quickfix/location list 'qi'
- * Searches in only the windows opened in the current tab.
+ * Only searches in the current tabpage.
  */
     static win_T *
 qf_find_win(qf_info_T *qi)
@@ -3430,9 +3426,8 @@ qf_find_win(qf_info_T *qi)
 
     FOR_ALL_WINDOWS(win)
 	if (is_qf_win(win, qi))
-	    break;
-
-    return win;
+	    return win;
+    return NULL;
 }
 
 /*
@@ -3776,7 +3771,7 @@ ex_make(exarg_T *eap)
     {
 	apply_autocmds(EVENT_QUICKFIXCMDPOST, au_name,
 					       curbuf->b_fname, TRUE, curbuf);
-	if (qi->qf_curlist < qi->qf_listcount)
+	if (qi != NULL && qi->qf_curlist < qi->qf_listcount)
 	    res = qi->qf_lists[qi->qf_curlist].qf_count;
 	else
 	    res = 0;
@@ -4170,20 +4165,18 @@ ex_cfile(exarg_T *eap)
     if (res >= 0 && qi != NULL)
 	qf_list_changed(qi, qi->qf_curlist);
 #ifdef FEAT_AUTOCMD
-    save_qfid = qi->qf_lists[qi->qf_curlist].qf_id;
+    if (qi != NULL)
+	save_qfid = qi->qf_lists[qi->qf_curlist].qf_id;
     if (au_name != NULL)
 	apply_autocmds(EVENT_QUICKFIXCMDPOST, au_name, NULL, FALSE, curbuf);
-    /*
-     * Autocmd might have freed the quickfix/location list. Check whether it is
-     * still valid
-     */
-    if (!qflist_valid(wp, save_qfid))
+
+    /* An autocmd might have freed the quickfix/location list. Check whether it
+     * is still valid. */
+    if (qi != NULL && !qflist_valid(wp, save_qfid))
 	return;
 #endif
     if (res > 0 && (eap->cmdidx == CMD_cfile || eap->cmdidx == CMD_lfile))
-    {
 	qf_jump(qi, 0, 0, eap->forceit);	/* display first error */
-    }
 }
 
 /*
@@ -4945,6 +4938,24 @@ qf_id2nr(qf_info_T *qi, int_u qfid)
 }
 
 /*
+ * Return the quickfix/location list window identifier in the current tabpage.
+ */
+    static int
+qf_winid(qf_info_T *qi)
+{
+    win_T	*win;
+
+    /* The quickfix window can be opened even if the quickfix list is not set
+     * using ":copen". This is not true for location lists.  */
+    if (qi == NULL)
+	return 0;
+    win = qf_find_win(qi);
+    if (win != NULL)
+	return win->w_id;
+    return 0;
+}
+
+/*
  * Return quickfix/location list details (title) as a
  * dictionary. 'what' contains the details to return. If 'list_idx' is -1,
  * then current list is used. Otherwise the specified list is used.
@@ -5053,7 +5064,7 @@ qf_get_properties(win_T *wp, dict_T *what, dict_T *retdict)
 	if ((status == OK) && (flags & QF_GETLIST_NR))
 	    status = dict_add_nr_str(retdict, "nr", 0L, NULL);
 	if ((status == OK) && (flags & QF_GETLIST_WINID))
-	    status = dict_add_nr_str(retdict, "winid", 0L, NULL);
+	    status = dict_add_nr_str(retdict, "winid", qf_winid(qi), NULL);
 	if ((status == OK) && (flags & QF_GETLIST_CONTEXT))
 	    status = dict_add_nr_str(retdict, "context", 0L, (char_u *)"");
 	if ((status == OK) && (flags & QF_GETLIST_ID))
@@ -5079,15 +5090,7 @@ qf_get_properties(win_T *wp, dict_T *what, dict_T *retdict)
     if ((status == OK) && (flags & QF_GETLIST_NR))
 	status = dict_add_nr_str(retdict, "nr", qf_idx + 1, NULL);
     if ((status == OK) && (flags & QF_GETLIST_WINID))
-    {
-	win_T	*win;
-	int	win_id = 0;
-
-	win = qf_find_win(qi);
-	if (win != NULL)
-	    win_id = win->w_id;
-	status = dict_add_nr_str(retdict, "winid", win_id, NULL);
-    }
+	status = dict_add_nr_str(retdict, "winid", qf_winid(qi), NULL);
     if ((status == OK) && (flags & QF_GETLIST_ITEMS))
     {
 	list_T	*l = list_alloc();

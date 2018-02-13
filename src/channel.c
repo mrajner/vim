@@ -317,8 +317,8 @@ channel_still_useful(channel_T *channel)
     /* If there is no callback then nobody can get readahead.  If the fd is
      * closed and there is no readahead then the callback won't be called. */
     has_sock_msg = channel->ch_part[PART_SOCK].ch_fd != INVALID_FD
-	          || channel->ch_part[PART_SOCK].ch_head.rq_next != NULL
-		  || channel->ch_part[PART_SOCK].ch_json_head.jq_next != NULL;
+		|| channel->ch_part[PART_SOCK].ch_head.rq_next != NULL
+		|| channel->ch_part[PART_SOCK].ch_json_head.jq_next != NULL;
     has_out_msg = channel->ch_part[PART_OUT].ch_fd != INVALID_FD
 		  || channel->ch_part[PART_OUT].ch_head.rq_next != NULL
 		  || channel->ch_part[PART_OUT].ch_json_head.jq_next != NULL;
@@ -2207,14 +2207,7 @@ channel_exe_cmd(channel_T *channel, ch_part_T part, typval_T *argv)
 	ex_redraw(&ea);
 	showruler(FALSE);
 	setcursor();
-	out_flush();
-#ifdef FEAT_GUI
-	if (gui.in_use)
-	{
-	    gui_update_cursor(TRUE, FALSE);
-	    gui_mch_flush();
-	}
-#endif
+	out_flush_cursor(TRUE, FALSE);
     }
     else if (STRCMP(cmd, "expr") == 0 || STRCMP(cmd, "call") == 0)
     {
@@ -2985,8 +2978,7 @@ channel_clear_one(channel_T *channel, ch_part_T part)
 channel_clear(channel_T *channel)
 {
     ch_log(channel, "Clearing channel");
-    vim_free(channel->ch_hostname);
-    channel->ch_hostname = NULL;
+    VIM_CLEAR(channel->ch_hostname);
     channel_clear_one(channel, PART_SOCK);
     channel_clear_one(channel, PART_OUT);
     channel_clear_one(channel, PART_ERR);
