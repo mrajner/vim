@@ -203,7 +203,7 @@ redraw_win_later(
     win_T	*wp,
     int		type)
 {
-    if (wp->w_redr_type < type)
+    if (!exiting && wp->w_redr_type < type)
     {
 	wp->w_redr_type = type;
 	if (type >= NOT_VALID)
@@ -468,17 +468,14 @@ redraw_after_callback(int call_update_screen)
 	setcursor();
     }
     cursor_on();
-    out_flush();
 #ifdef FEAT_GUI
-    if (gui.in_use)
-    {
+    if (gui.in_use && !gui_mch_is_blink_off())
 	/* Don't update the cursor when it is blinking and off to avoid
 	 * flicker. */
-	if (!gui_mch_is_blink_off())
-	    gui_update_cursor(FALSE, FALSE);
-	gui_mch_flush();
-    }
+	out_flush_cursor(FALSE, FALSE);
+    else
 #endif
+	out_flush();
 
     --redrawing_for_callback;
 }
@@ -800,9 +797,12 @@ update_screen(int type_arg)
      * done. */
     if (gui.in_use)
     {
-	out_flush();	/* required before updating the cursor */
 	if (did_undraw && !gui_mch_is_blink_off())
 	{
+	    mch_disable_flush();
+	    out_flush();	/* required before updating the cursor */
+	    mch_enable_flush();
+
 	    /* Put the GUI position where the cursor was, gui_update_cursor()
 	     * uses that. */
 	    gui.col = gui_cursor_col;
@@ -811,9 +811,12 @@ update_screen(int type_arg)
 	    gui.col = mb_fix_col(gui.col, gui.row);
 # endif
 	    gui_update_cursor(FALSE, FALSE);
+	    gui_may_flush();
 	    screen_cur_col = gui.col;
 	    screen_cur_row = gui.row;
 	}
+	else
+	    out_flush();
 	gui_update_scrollbars(FALSE);
     }
 #endif
@@ -863,8 +866,7 @@ update_finish(void)
      * done. */
     if (gui.in_use)
     {
-	out_flush();	/* required before updating the cursor */
-	gui_update_cursor(FALSE, FALSE);
+	out_flush_cursor(FALSE, FALSE);
 	gui_update_scrollbars(FALSE);
     }
 # endif
@@ -1154,7 +1156,7 @@ win_update(win_T *wp)
     }
 
     /* Window is zero-height: nothing to draw. */
-    if (wp->w_height == 0)
+    if (wp->w_height + WINBAR_HEIGHT(wp) == 0)
     {
 	wp->w_redr_type = 0;
 	return;
@@ -1174,6 +1176,11 @@ win_update(win_T *wp)
      */
     if (term_update_window(wp) == OK)
     {
+# ifdef FEAT_MENU
+	/* Draw the window toolbar, if there is one. */
+	if (winbar_height(wp) > 0)
+	    redraw_win_toolbar(wp);
+# endif
 	wp->w_redr_type = 0;
 	return;
     }
@@ -2123,7 +2130,11 @@ win_update(win_T *wp)
 
 	    wp->w_lines[idx].wl_lnum = lnum;
 	    wp->w_lines[idx].wl_valid = TRUE;
-	    if (row > wp->w_height)	/* past end of screen */
+
+	    /* Past end of the window or end of the screen. Note that after
+	     * resizing wp->w_height may be end up too big. That's a problem
+	     * elsewhere, but prevent a crash here. */
+	    if (row > wp->w_height || row + wp->w_winrow >= Rows)
 	    {
 		/* we may need the size of that too long line later on */
 		if (dollar_vcol == -1)
@@ -2788,7 +2799,7 @@ fold_line(
 	    {
 		ScreenLinesUC[off + col] = fill_fold;
 		ScreenLinesC[0][off + col] = 0;
-                ScreenLines[off + col] = 0x80; /* avoid storing zero */
+		ScreenLines[off + col] = 0x80; /* avoid storing zero */
 	    }
 	    else
 	    {
@@ -4320,10 +4331,7 @@ win_line(
 #endif
 
 	    if (p_extra_free != NULL)
-	    {
-		vim_free(p_extra_free);
-		p_extra_free = NULL;
-	    }
+		VIM_CLEAR(p_extra_free);
 	    /*
 	     * Get a character from the line itself.
 	     */
@@ -8037,7 +8045,7 @@ screen_start_highlight(int attr)
 		else
 		    attr = aep->ae_attr;
 	    }
-	    if ((attr & HL_BOLD) && T_MD != NULL)	/* bold */
+	    if ((attr & HL_BOLD) && *T_MD != NUL)	/* bold */
 		out_str(T_MD);
 	    else if (aep != NULL && cterm_normal_fg_bold &&
 #ifdef FEAT_TERMGUICOLORS
@@ -8052,16 +8060,19 @@ screen_start_highlight(int attr)
 		/* If the Normal FG color has BOLD attribute and the new HL
 		 * has a FG color defined, clear BOLD. */
 		out_str(T_ME);
-	    if ((attr & HL_STANDOUT) && T_SO != NULL)	/* standout */
+	    if ((attr & HL_STANDOUT) && *T_SO != NUL)	/* standout */
 		out_str(T_SO);
-	    if ((attr & (HL_UNDERLINE | HL_UNDERCURL)) && T_US != NULL)
-						   /* underline or undercurl */
+	    if ((attr & HL_UNDERCURL) && *T_UCS != NUL) /* undercurl */
+		out_str(T_UCS);
+	    if (((attr & HL_UNDERLINE)	    /* underline or undercurl */
+			|| ((attr & HL_UNDERCURL) && *T_UCS == NUL))
+		    && *T_US != NUL)
 		out_str(T_US);
-	    if ((attr & HL_ITALIC) && T_CZH != NULL)	/* italic */
+	    if ((attr & HL_ITALIC) && *T_CZH != NUL)	/* italic */
 		out_str(T_CZH);
-	    if ((attr & HL_INVERSE) && T_MR != NULL)	/* inverse (reverse) */
+	    if ((attr & HL_INVERSE) && *T_MR != NUL)	/* inverse (reverse) */
 		out_str(T_MR);
-	    if ((attr & HL_STRIKETHROUGH) && T_STS != NULL)	/* strike */
+	    if ((attr & HL_STRIKETHROUGH) && *T_STS != NUL)	/* strike */
 		out_str(T_STS);
 
 	    /*
@@ -8173,7 +8184,15 @@ screen_stop_highlight(void)
 		else
 		    out_str(T_SE);
 	    }
-	    if (screen_attr & (HL_UNDERLINE | HL_UNDERCURL))
+	    if ((screen_attr & HL_UNDERCURL) && *T_UCE != NUL)
+	    {
+		if (STRCMP(T_UCE, T_ME) == 0)
+		    do_ME = TRUE;
+		else
+		    out_str(T_UCE);
+	    }
+	    if ((screen_attr & HL_UNDERLINE)
+			    || ((screen_attr & HL_UNDERCURL) && *T_UCE == NUL))
 	    {
 		if (STRCMP(T_UE, T_ME) == 0)
 		    do_ME = TRUE;
@@ -8302,15 +8321,29 @@ screen_char(unsigned off, int row, int col)
     {
 	char_u	    buf[MB_MAXBYTES + 1];
 
-	/* Convert UTF-8 character to bytes and write it. */
-
-	buf[utfc_char2bytes(off, buf)] = NUL;
-
-	out_str(buf);
 	if (utf_ambiguous_width(ScreenLinesUC[off]))
+	{
+	    if (*p_ambw == 'd'
+# ifdef FEAT_GUI
+		    && !gui.in_use
+# endif
+		    )
+	    {
+		/* Clear the two screen cells. If the character is actually
+		 * single width it won't change the second cell. */
+		out_str((char_u *)"  ");
+		term_windgoto(row, col);
+	    }
+	    /* not sure where the cursor is after drawing the ambiguous width
+	     * character */
 	    screen_cur_col = 9999;
+	}
 	else if (utf_char2cells(ScreenLinesUC[off]) > 1)
 	    ++screen_cur_col;
+
+	/* Convert the UTF-8 character to bytes and write it. */
+	buf[utfc_char2bytes(off, buf)] = NUL;
+	out_str(buf);
     }
     else
 #endif
@@ -8829,27 +8862,17 @@ give_up:
 	     * and over again. */
 	    done_outofmem_msg = TRUE;
 	}
-	vim_free(new_ScreenLines);
-	new_ScreenLines = NULL;
+	VIM_CLEAR(new_ScreenLines);
 #ifdef FEAT_MBYTE
-	vim_free(new_ScreenLinesUC);
-	new_ScreenLinesUC = NULL;
+	VIM_CLEAR(new_ScreenLinesUC);
 	for (i = 0; i < p_mco; ++i)
-	{
-	    vim_free(new_ScreenLinesC[i]);
-	    new_ScreenLinesC[i] = NULL;
-	}
-	vim_free(new_ScreenLines2);
-	new_ScreenLines2 = NULL;
+	    VIM_CLEAR(new_ScreenLinesC[i]);
+	VIM_CLEAR(new_ScreenLines2);
 #endif
-	vim_free(new_ScreenAttrs);
-	new_ScreenAttrs = NULL;
-	vim_free(new_LineOffset);
-	new_LineOffset = NULL;
-	vim_free(new_LineWraps);
-	new_LineWraps = NULL;
-	vim_free(new_TabPageIdxs);
-	new_TabPageIdxs = NULL;
+	VIM_CLEAR(new_ScreenAttrs);
+	VIM_CLEAR(new_LineOffset);
+	VIM_CLEAR(new_LineWraps);
+	VIM_CLEAR(new_TabPageIdxs);
     }
     else
     {

@@ -215,14 +215,16 @@ endfunc
 
 func! Test_edit_08()
   " reset insertmode from i_ctrl-r_=
+  let g:bufnr = bufnr('%')
   new
   call setline(1, ['abc'])
   call cursor(1, 4)
-  call feedkeys(":set im\<cr>ZZZ\<c-r>=setbufvar(1,'&im', 0)\<cr>",'tnix')
+  call feedkeys(":set im\<cr>ZZZ\<c-r>=setbufvar(g:bufnr,'&im', 0)\<cr>",'tnix')
   call assert_equal(['abZZZc'], getline(1,'$'))
   call assert_equal([0, 1, 1, 0], getpos('.'))
   call assert_false(0, '&im')
   bw!
+  unlet g:bufnr
 endfunc
 
 func! Test_edit_09()
@@ -629,11 +631,11 @@ func! Test_edit_CTRL_L()
   call feedkeys("cct\<c-x>\<c-l>\<c-n>\<esc>", 'tnix')
   call assert_equal(['one', 'two', 'three', 't', '', '', ''], getline(1, '$'))
   call feedkeys("cct\<c-x>\<c-l>\<c-n>\<c-n>\<esc>", 'tnix')
-  call assert_equal(['one', 'two', 'three', 't', '', '', ''], getline(1, '$'))
-  call feedkeys("cct\<c-x>\<c-l>\<c-n>\<c-n>\<c-n>\<esc>", 'tnix')
   call assert_equal(['one', 'two', 'three', 'two', '', '', ''], getline(1, '$'))
-  call feedkeys("cct\<c-x>\<c-l>\<c-n>\<c-n>\<c-n>\<c-n>\<esc>", 'tnix')
+  call feedkeys("cct\<c-x>\<c-l>\<c-n>\<c-n>\<c-n>\<esc>", 'tnix')
   call assert_equal(['one', 'two', 'three', 'three', '', '', ''], getline(1, '$'))
+  call feedkeys("cct\<c-x>\<c-l>\<c-n>\<c-n>\<c-n>\<c-n>\<esc>", 'tnix')
+  call assert_equal(['one', 'two', 'three', 't', '', '', ''], getline(1, '$'))
   call feedkeys("cct\<c-x>\<c-l>\<c-p>\<esc>", 'tnix')
   call assert_equal(['one', 'two', 'three', 'two', '', '', ''], getline(1, '$'))
   call feedkeys("cct\<c-x>\<c-l>\<c-p>\<c-p>\<esc>", 'tnix')
@@ -1355,7 +1357,6 @@ func Test_edit_complete_very_long_name()
   let save_columns = &columns
   " Need at least about 1100 columns to reproduce the problem.
   set columns=2000
-  call assert_equal(2000, &columns)
   set noswapfile
 
   let longfilename = longdirname . '/' . repeat('a', 255)

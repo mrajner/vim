@@ -83,10 +83,16 @@ SilentInstall normal
 # These are the pages we use
 Page license
 Page components
+Page custom SetCustom ValidateCustom ": _vimrc setting"
 Page directory "" "" CheckInstallDir
 Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
+
+# Reserve files
+# Needed for showing the _vimrc setting page faster.
+ReserveFile /plugin InstallOptions.dll
+ReserveFile vimrc.ini
 
 ##########################################################
 # Functions
@@ -135,6 +141,10 @@ Function .onInit
   StrCpy $1 "-register-OLE"
   StrCpy $2 "gvim evim gview gvimdiff vimtutor"
 
+  # Extract InstallOptions files
+  # $PLUGINSDIR will automatically be removed when the installer closes
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\vimrc.ini "vimrc.ini"
 FunctionEnd
 
 Function .onUserAbort
@@ -262,6 +272,9 @@ Section "Vim executables and runtime files"
 
 	SetOutPath $0\autoload
 	File ${VIMRT}\autoload\*.*
+
+	SetOutPath $0\autoload\dist
+	File ${VIMRT}\autoload\dist\*.*
 
 	SetOutPath $0\autoload\xml
 	File ${VIMRT}\autoload\xml\*.*
@@ -404,7 +417,7 @@ Section "Add an Edit-with-Vim context menu entry"
 SectionEnd
 
 ##########################################################
-Section "Create a _vimrc if it doesn't exist"
+Section "Create a _vimrc if it doesn't exist" sec_vimrc_id
 	SectionIn 1 3
 
 	StrCpy $1 "$1 -create-vimrc"
@@ -461,6 +474,43 @@ SectionEnd
 Section -post
 	BringToFront
 SectionEnd
+
+##########################################################
+Function SetCustom
+	# Display the InstallOptions dialog
+
+	# Check if a _vimrc should be created
+	SectionGetFlags ${sec_vimrc_id} $3
+	IntOp $3 $3 & 1
+	StrCmp $3 "1" +2 0
+	  Abort
+
+	InstallOptions::dialog "$PLUGINSDIR\vimrc.ini"
+	Pop $3
+FunctionEnd
+
+Function ValidateCustom
+	ReadINIStr $3 "$PLUGINSDIR\vimrc.ini" "Field 2" "State"
+	StrCmp $3 "1" 0 +3
+	  StrCpy $1 "$1 -vimrc-remap no"
+	  Goto behave
+
+	  StrCpy $1 "$1 -vimrc-remap win"
+
+	behave:
+	ReadINIStr $3 "$PLUGINSDIR\vimrc.ini" "Field 5" "State"
+	StrCmp $3 "1" 0 +3
+	  StrCpy $1 "$1 -vimrc-behave unix"
+	  Goto done
+
+	ReadINIStr $3 "$PLUGINSDIR\vimrc.ini" "Field 6" "State"
+	StrCmp $3 "1" 0 +3
+	  StrCpy $1 "$1 -vimrc-behave mswin"
+	  Goto done
+
+	  StrCpy $1 "$1 -vimrc-behave default"
+	done:
+FunctionEnd
 
 ##########################################################
 Section Uninstall

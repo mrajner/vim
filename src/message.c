@@ -415,8 +415,7 @@ static char_u   *last_sourcing_name = NULL;
     void
 reset_last_sourcing(void)
 {
-    vim_free(last_sourcing_name);
-    last_sourcing_name = NULL;
+    VIM_CLEAR(last_sourcing_name);
     last_sourcing_lnum = 0;
 }
 
@@ -670,7 +669,8 @@ emsg(char_u *s)
 
 	ex_exitval = 1;
 
-	/* Reset msg_silent, an error causes messages to be switched back on. */
+	/* Reset msg_silent, an error causes messages to be switched back on.
+	 */
 	msg_silent = 0;
 	cmd_silent = FALSE;
 
@@ -760,7 +760,7 @@ emsgn(char_u *s, long n)
     void
 iemsg(char_u *s)
 {
-    msg(s);
+    emsg(s);
 #ifdef ABORT_ON_INTERNAL_ERROR
     abort();
 #endif
@@ -1178,6 +1178,7 @@ wait_return(int redraw)
 				|| c == K_RIGHTDRAG  || c == K_RIGHTRELEASE
 				|| c == K_MOUSELEFT  || c == K_MOUSERIGHT
 				|| c == K_MOUSEDOWN  || c == K_MOUSEUP
+				|| c == K_MOUSEMOVE
 				|| (!mouse_has(MOUSE_RETURN)
 				    && mouse_row < msg_row
 				    && (c == K_LEFTMOUSE
@@ -1247,10 +1248,7 @@ wait_return(int redraw)
     reset_last_sourcing();
     if (keep_msg != NULL && vim_strsize(keep_msg) >=
 				  (Rows - cmdline_row - 1) * Columns + sc_col)
-    {
-	vim_free(keep_msg);
-	keep_msg = NULL;	    /* don't redisplay message, it's too long */
-    }
+	VIM_CLEAR(keep_msg);	    /* don't redisplay message, it's too long */
 
     if (tmpState == SETWSIZE)	    /* got resize event while in vgetc() */
     {
@@ -1323,10 +1321,7 @@ msg_start(void)
     int		did_return = FALSE;
 
     if (!msg_silent)
-    {
-	vim_free(keep_msg);
-	keep_msg = NULL;		/* don't display old message now */
-    }
+	VIM_CLEAR(keep_msg);
 
 #ifdef FEAT_EVAL
     if (need_clr_eos)
@@ -2314,7 +2309,9 @@ msg_scroll_up(void)
 	gui_undraw_cursor();
 #endif
     /* scrolling up always works */
+    mch_disable_flush();
     screen_del_lines(0, 0, 1, (int)Rows, TRUE, 0, NULL);
+    mch_enable_flush();
 
     if (!can_clear((char_u *)" "))
     {
@@ -2659,11 +2656,10 @@ msg_puts_printf(char_u *str, int maxlen)
 	if (!(silent_mode && p_verbose == 0))
 	{
 	    /* NL --> CR NL translation (for Unix, not for "--version") */
-	    /* NL --> CR translation (for Mac) */
 	    p = &buf[0];
 	    if (*s == '\n' && !info_message)
 		*p++ = '\r';
-#if defined(USE_CR) && !defined(MACOS_X_UNIX)
+#if defined(USE_CR)
 	    else
 #endif
 		*p++ = *s;
@@ -2837,7 +2833,7 @@ do_more_prompt(int typed_char)
 		skip_redraw = TRUE;		/* skip redraw once */
 		need_wait_return = FALSE;	/* don't wait in main() */
 	    }
-	    /*FALLTHROUGH*/
+	    /* FALLTHROUGH */
 	case 'q':		/* quit */
 	case Ctrl_C:
 	case ESC:
@@ -3004,7 +3000,7 @@ mch_errmsg(char *str)
      * On Mac, when started from Finder, stderr is the console. */
     if (
 # ifdef UNIX
-#  ifdef MACOS_X_UNIX
+#  ifdef MACOS_X
 	    (isatty(2) && strcmp("/dev/console", ttyname(2)) != 0)
 #  else
 	    isatty(2)
@@ -3071,7 +3067,7 @@ mch_msg(char *str)
      * On Mac, when started from Finder, stderr is the console. */
     if (
 #  ifdef UNIX
-#   ifdef MACOS_X_UNIX
+#   ifdef MACOS_X
 	    (isatty(2) && strcmp("/dev/console", ttyname(2)) != 0)
 #   else
 	    isatty(2)
@@ -3478,8 +3474,7 @@ give_warning(char_u *message, int hl)
 #ifdef FEAT_EVAL
     set_vim_var_string(VV_WARNINGMSG, message, -1);
 #endif
-    vim_free(keep_msg);
-    keep_msg = NULL;
+    VIM_CLEAR(keep_msg);
     if (hl)
 	keep_msg_attr = HL_ATTR(HLF_W);
     else
@@ -4990,7 +4985,7 @@ vim_vsnprintf_typval(
 			    zero_padding = 0;
 			}
 			else
-                        {
+			{
 			    /* Regular float number */
 			    format[0] = '%';
 			    l = 1;
@@ -5013,7 +5008,7 @@ vim_vsnprintf_typval(
 			    format[l + 1] = NUL;
 
 			    str_arg_l = sprintf(tmp, format, f);
-                        }
+			}
 
 			if (remove_trailing_zeroes)
 			{

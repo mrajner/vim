@@ -100,11 +100,14 @@ static int	lastc_bytelen = 1;	/* >1 for multi-byte char */
 #if defined(FEAT_AUTOCMD) || defined(FEAT_EVAL) || defined(PROTO)
 /* copy of spats[], for keeping the search patterns while executing autocmds */
 static struct spat  saved_spats[2];
-static int	    saved_last_idx = 0;
+#endif
 # ifdef FEAT_SEARCH_EXTRA
+/* copy of spats[RE_SEARCH], for keeping the search patterns while incremental
+ * searching */
+static struct spat  saved_last_search_spat;
+static int	    saved_last_idx = 0;
 static int	    saved_no_hlsearch = 0;
 # endif
-#endif
 
 static char_u	    *mr_pattern = NULL;	/* pattern used by search_regcomp() */
 #ifdef FEAT_RIGHTLEFT
@@ -329,9 +332,9 @@ restore_search_patterns(void)
     {
 	vim_free(spats[0].pat);
 	spats[0] = saved_spats[0];
-#if defined(FEAT_EVAL)
+# if defined(FEAT_EVAL)
 	set_vv_searchforward();
-#endif
+# endif
 	vim_free(spats[1].pat);
 	spats[1] = saved_spats[1];
 	last_idx = saved_last_idx;
@@ -360,6 +363,44 @@ free_search_patterns(void)
 }
 #endif
 
+#ifdef FEAT_SEARCH_EXTRA
+/*
+ * Save and restore the search pattern for incremental highlight search
+ * feature.
+ *
+ * It's similar but differnt from save_search_patterns() and
+ * restore_search_patterns(), because the search pattern must be restored when
+ * cannceling incremental searching even if it's called inside user functions.
+ */
+    void
+save_last_search_pattern(void)
+{
+    saved_last_search_spat = spats[RE_SEARCH];
+    if (spats[RE_SEARCH].pat != NULL)
+	saved_last_search_spat.pat = vim_strsave(spats[RE_SEARCH].pat);
+    saved_last_idx = last_idx;
+    saved_no_hlsearch = no_hlsearch;
+}
+
+    void
+restore_last_search_pattern(void)
+{
+    vim_free(spats[RE_SEARCH].pat);
+    spats[RE_SEARCH] = saved_last_search_spat;
+# if defined(FEAT_EVAL)
+    set_vv_searchforward();
+# endif
+    last_idx = saved_last_idx;
+    SET_NO_HLSEARCH(saved_no_hlsearch);
+}
+
+    char_u *
+last_search_pattern(void)
+{
+    return spats[RE_SEARCH].pat;
+}
+#endif
+
 /*
  * Return TRUE when case should be ignored for search pattern "pat".
  * Uses the 'ignorecase' and 'smartcase' options.
@@ -380,7 +421,7 @@ ignorecase_opt(char_u *pat, int ic_in, int scs)
 
     if (ic && !no_smartcase && scs
 #ifdef FEAT_INS_EXPAND
-				&& !(ctrl_x_mode && curbuf->b_p_inf)
+			     && !(ctrl_x_mode_not_default() && curbuf->b_p_inf)
 #endif
 								    )
 	ic = !pat_has_uppercase(pat);
@@ -643,11 +684,11 @@ searchit(
 		    && pos->lnum >= 1 && pos->lnum <= buf->b_ml.ml_line_count
 						    && pos->col < MAXCOL - 2)
 	{
-	    ptr = ml_get_buf(buf, pos->lnum, FALSE) + pos->col;
-	    if (*ptr == NUL)
+	    ptr = ml_get_buf(buf, pos->lnum, FALSE);
+	    if ((int)STRLEN(ptr) <= pos->col)
 		start_char_len = 1;
 	    else
-		start_char_len = (*mb_ptr2len)(ptr);
+		start_char_len = (*mb_ptr2len)(ptr + pos->col);
 	}
 #endif
 	else
@@ -932,7 +973,16 @@ searchit(
 					      NULL, NULL
 #endif
 					    )) == 0)
+			    {
+#ifdef FEAT_RELTIME
+				/* If the search timed out, we did find a match
+				 * but it might be the wrong one, so that's not
+				 * OK. */
+				if (timed_out != NULL && *timed_out)
+				    match_ok = FALSE;
+#endif
 				break;
+			    }
 
 			    /* Need to get the line pointer again, a
 			     * multi-line search may have made it invalid. */
@@ -2245,7 +2295,7 @@ findmatchlimit(
 	    {
 		/*
 		 * A comment may contain / * or / /, it may also start or end
-		 * with / * /.	Ignore a / * after / /.
+		 * with / * /.	Ignore a / * after / / and after *.
 		 */
 		if (pos.col == 0)
 		    continue;
@@ -2271,6 +2321,7 @@ findmatchlimit(
 		}
 		else if (  linep[pos.col - 1] == '/'
 			&& linep[pos.col] == '*'
+			&& (pos.col == 1 || linep[pos.col - 2] != '*')
 			&& (int)pos.col < comment_col)
 		{
 		    count++;
@@ -2633,14 +2684,8 @@ showmatch(
 	    showruler(FALSE);
 	    setcursor();
 	    cursor_on();		/* make sure that the cursor is shown */
-	    out_flush();
-#ifdef FEAT_GUI
-	    if (gui.in_use)
-	    {
-		gui_update_cursor(TRUE, FALSE);
-		gui_mch_flush();
-	    }
-#endif
+	    out_flush_cursor(TRUE, FALSE);
+
 	    /* Restore dollar_vcol(), because setcursor() may call curs_rows()
 	     * which resets it if the matching position is in a previous line
 	     * and has a higher column number. */
@@ -3980,7 +4025,7 @@ again:
     {
 	if (do_searchpair((char_u *)"<[^ \t>/!]\\+\\%(\\_s\\_[^>]\\{-}[^/]>\\|$\\|\\_s\\=>\\)",
 		    (char_u *)"",
-		    (char_u *)"</[^>]*>", BACKWARD, (char_u *)"", 0,
+		    (char_u *)"</[^>]*>", BACKWARD, NULL, 0,
 						  NULL, (linenr_T)0, 0L) <= 0)
 	{
 	    curwin->w_cursor = old_pos;
@@ -4014,7 +4059,7 @@ again:
     sprintf((char *)spat, "<%.*s\\>\\%%(\\s\\_[^>]\\{-}[^/]>\\|>\\)\\c", len, p);
     sprintf((char *)epat, "</%.*s>\\c", len, p);
 
-    r = do_searchpair(spat, (char_u *)"", epat, FORWARD, (char_u *)"",
+    r = do_searchpair(spat, (char_u *)"", epat, FORWARD, NULL,
 						    0, NULL, (linenr_T)0, 0L);
 
     vim_free(spat);
@@ -5014,8 +5059,7 @@ find_pattern_in_path(
 				prev_fname = NULL;
 			    }
 			}
-			vim_free(new_fname);
-			new_fname = NULL;
+			VIM_CLEAR(new_fname);
 			already_searched = TRUE;
 			break;
 		    }

@@ -209,18 +209,13 @@
 # define mch_lstat(n, p)	mch_stat((n), (p))
 #endif
 
-#ifdef MACOS_CLASSIC
-/* MacOS classic doesn't support perm but MacOS X does. */
-# define mch_open(n, m, p)	open((n), (m))
-#else
-# ifdef VMS
+#ifdef VMS
 /*
  * It is possible to force some record format with:
  * #  define mch_open(n, m, p) open(vms_fixfilename(n), (m), (p)), "rat=cr", "rfm=stmlf", "mrs=0")
  * but it is not recommended, because it can destroy indexes etc.
  */
-#  define mch_open(n, m, p)	open(vms_fixfilename(n), (m), (p))
-# endif
+# define mch_open(n, m, p)	open(vms_fixfilename(n), (m), (p))
 #endif
 
 /* mch_open_rw(): invoke mch_open() with third argument for user R/W. */
@@ -266,7 +261,7 @@
  * PTR2CHAR(): get character from pointer.
  */
 #ifdef FEAT_MBYTE
-/* Get the length of the character p points to */
+/* Get the length of the character p points to, including composing chars */
 # define MB_PTR2LEN(p)	    (has_mbyte ? (*mb_ptr2len)(p) : 1)
 /* Advance multi-byte pointer, skip over composing chars. */
 # define MB_PTR_ADV(p)	    p += has_mbyte ? (*mb_ptr2len)(p) : 1
@@ -370,6 +365,28 @@
  * HIKEY2DI() converts a hashitem key pointer to a dictitem pointer.
  * HI2DI() converts a hashitem pointer to a dictitem pointer.
  */
-# define DI2HIKEY(di) ((di)->di_key)
-# define HIKEY2DI(p)  ((dictitem_T *)(p - offsetof(dictitem_T, di_key)))
-# define HI2DI(hi)     HIKEY2DI((hi)->hi_key)
+#define DI2HIKEY(di) ((di)->di_key)
+#define HIKEY2DI(p)  ((dictitem_T *)(p - offsetof(dictitem_T, di_key)))
+#define HI2DI(hi)     HIKEY2DI((hi)->hi_key)
+
+/*
+ * Flush control functions.
+ */
+#ifdef FEAT_GUI
+# define mch_enable_flush()	gui_enable_flush()
+# define mch_disable_flush()	gui_disable_flush()
+#else
+# define mch_enable_flush()
+# define mch_disable_flush()
+#endif
+
+/*
+ * Like vim_free(), and also set the pointer to NULL.
+ */
+#define VIM_CLEAR(p) \
+    do { \
+	if ((p) != NULL) { \
+	    vim_free(p); \
+	    (p) = NULL; \
+	} \
+    } while (0)

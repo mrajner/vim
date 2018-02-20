@@ -201,9 +201,6 @@ static void	ex_wrongmodifier(exarg_T *eap);
 static void	ex_find(exarg_T *eap);
 static void	ex_open(exarg_T *eap);
 static void	ex_edit(exarg_T *eap);
-#if !defined(FEAT_GUI) && !defined(FEAT_CLIENTSERVER)
-# define ex_drop		ex_ni
-#endif
 #ifndef FEAT_GUI
 # define ex_gui			ex_nogui
 static void	ex_nogui(exarg_T *eap);
@@ -868,8 +865,7 @@ do_cmdline(
 	{
 	    /* Each '|' separated command is stored separately in lines_ga, to
 	     * be able to jump to it.  Don't use next_cmdline now. */
-	    vim_free(cmdline_copy);
-	    cmdline_copy = NULL;
+	    VIM_CLEAR(cmdline_copy);
 
 	    /* Check if a function has returned or, unless it has an unclosed
 	     * try conditional, aborted. */
@@ -1084,8 +1080,7 @@ do_cmdline(
 
 	if (next_cmdline == NULL)
 	{
-	    vim_free(cmdline_copy);
-	    cmdline_copy = NULL;
+	    VIM_CLEAR(cmdline_copy);
 #ifdef FEAT_CMDHIST
 	    /*
 	     * If the command was typed, remember it for the ':' register.
@@ -1174,6 +1169,13 @@ do_cmdline(
 		cstack.cs_lflags &= ~CSL_HAD_LOOP;
 		cstack.cs_line[cstack.cs_idx] = current_line - 1;
 	    }
+	}
+
+	/* Check for the next breakpoint after a watchexpression */
+	if (breakpoint != NULL && has_watchexpr())
+	{
+	    *breakpoint = dbg_find_breakpoint(FALSE, fname, sourcing_lnum);
+	    *dbg_tick = debug_tick;
 	}
 
 	/*
@@ -2878,8 +2880,18 @@ do_one_cmd(
     }
 #endif
 
+    /* The :try command saves the emsg_silent flag, reset it here when
+     * ":silent! try" was used, it should only apply to :try itself. */
+    if (ea.cmdidx == CMD_try && did_esilent > 0)
+    {
+	emsg_silent -= did_esilent;
+	if (emsg_silent < 0)
+	    emsg_silent = 0;
+	did_esilent = 0;
+    }
+
 /*
- * 7. Switch on command name.
+ * 7. Execute the command.
  *
  * The "ea" structure holds the arguments that can be used.
  */
@@ -4115,7 +4127,7 @@ set_one_cmd_context(
 	case CMD_bunload:
 	    while ((xp->xp_pattern = vim_strchr(arg, ' ')) != NULL)
 		arg = xp->xp_pattern + 1;
-	    /*FALLTHROUGH*/
+	    /* FALLTHROUGH */
 	case CMD_buffer:
 	case CMD_sbuffer:
 	case CMD_checktime:
@@ -4521,13 +4533,14 @@ get_address(
 		    if (lnum != MAXLNUM)
 			curwin->w_cursor.lnum = lnum;
 		    /*
-		     * Start a forward search at the end of the line.
+		     * Start a forward search at the end of the line (unless
+		     * before the first line).
 		     * Start a backward search at the start of the line.
 		     * This makes sure we never match in the current
 		     * line, and can match anywhere in the
 		     * next/previous line.
 		     */
-		    if (c == '/')
+		    if (c == '/' && curwin->w_cursor.lnum > 0)
 			curwin->w_cursor.col = MAXCOL;
 		    else
 			curwin->w_cursor.col = 0;
@@ -5801,11 +5814,9 @@ uc_add_command(
 		goto fail;
 	    }
 
-	    vim_free(cmd->uc_rep);
-	    cmd->uc_rep = NULL;
+	    VIM_CLEAR(cmd->uc_rep);
 #if defined(FEAT_EVAL) && defined(FEAT_CMDL_COMPL)
-	    vim_free(cmd->uc_compl_arg);
-	    cmd->uc_compl_arg = NULL;
+	    VIM_CLEAR(cmd->uc_compl_arg);
 #endif
 	    break;
 	}
@@ -8057,6 +8068,16 @@ alist_set(
     int		fnum_len)
 {
     int		i;
+    static int  recursive = 0;
+
+    if (recursive)
+    {
+#ifdef FEAT_AUTOCMD
+	EMSG(_(e_au_recursive));
+#endif
+	return;
+    }
+    ++recursive;
 
     alist_clear(al);
     if (ga_grow(&al->al_ga, count) == OK)
@@ -8086,6 +8107,8 @@ alist_set(
 	FreeWild(count, files);
     if (al == &global_alist)
 	arg_had_last = FALSE;
+
+    --recursive;
 }
 
 /*
@@ -8939,11 +8962,8 @@ static char_u	*prev_dir = NULL;
     void
 free_cd_dir(void)
 {
-    vim_free(prev_dir);
-    prev_dir = NULL;
-
-    vim_free(globaldir);
-    globaldir = NULL;
+    VIM_CLEAR(prev_dir);
+    VIM_CLEAR(globaldir);
 }
 #endif
 
@@ -8954,8 +8974,7 @@ free_cd_dir(void)
     void
 post_chdir(int local)
 {
-    vim_free(curwin->w_localdir);
-    curwin->w_localdir = NULL;
+    VIM_CLEAR(curwin->w_localdir);
     if (local)
     {
 	/* If still in global directory, need to remember current
@@ -8970,8 +8989,7 @@ post_chdir(int local)
     {
 	/* We are now in the global directory, no need to remember its
 	 * name. */
-	vim_free(globaldir);
-	globaldir = NULL;
+	VIM_CLEAR(globaldir);
     }
 
     shorten_fnames(TRUE);
@@ -9047,11 +9065,19 @@ ex_cd(exarg_T *eap)
 	    EMSG(_(e_failed));
 	else
 	{
-	    post_chdir(eap->cmdidx == CMD_lcd || eap->cmdidx == CMD_lchdir);
+	    int is_local_chdir = eap->cmdidx == CMD_lcd
+						  || eap->cmdidx == CMD_lchdir;
+
+	    post_chdir(is_local_chdir);
 
 	    /* Echo the new current directory if the command was typed. */
 	    if (KeyTyped || p_verbose >= 5)
 		ex_pwd(eap);
+#ifdef FEAT_AUTOCMD
+	    apply_autocmds(EVENT_DIRCHANGED,
+		    is_local_chdir ? (char_u *)"window" : (char_u *)"global",
+		    new_dir, FALSE, curbuf);
+#endif
 	}
 	vim_free(tofree);
     }
@@ -9931,7 +9957,7 @@ ex_mkrc(
 			*dirnow = NUL;
 		    if (*dirnow != NUL && (ssop_flags & SSOP_SESDIR))
 		    {
-			if (vim_chdirfile(fname) == OK)
+			if (vim_chdirfile(fname, NULL) == OK)
 			    shorten_fnames(TRUE);
 		    }
 		    else if (*dirnow != NUL
@@ -10715,9 +10741,12 @@ eval_vars(
 		if (*s == '<')		/* "#<99" uses v:oldfiles */
 		    ++s;
 		i = (int)getdigits(&s);
+		if (s == src + 2 && src[1] == '-')
+		    /* just a minus sign, don't skip over it */
+		    s--;
 		*usedlen = (int)(s - src); /* length of what we expand */
 
-		if (src[1] == '<')
+		if (src[1] == '<' && i != 0)
 		{
 		    if (*usedlen < 2)
 		    {
@@ -10740,6 +10769,8 @@ eval_vars(
 		}
 		else
 		{
+		    if (i == 0 && src[1] == '<' && *usedlen > 1)
+			*usedlen = 1;
 		    buf = buflist_findnr(i);
 		    if (buf == NULL)
 		    {
@@ -11690,9 +11721,11 @@ put_view(
     }
 
     /*
-     * Local directory.
+     * Local directory, if the current flag is not view options or the "curdir"
+     * option is included.
      */
-    if (wp->w_localdir != NULL)
+    if (wp->w_localdir != NULL
+			    && (flagp != &vop_flags || (*flagp & SSOP_CURDIR)))
     {
 	if (fputs("lcd ", fd) < 0
 		|| ses_put_fname(fd, wp->w_localdir, flagp) == FAIL

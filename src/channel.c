@@ -317,8 +317,8 @@ channel_still_useful(channel_T *channel)
     /* If there is no callback then nobody can get readahead.  If the fd is
      * closed and there is no readahead then the callback won't be called. */
     has_sock_msg = channel->ch_part[PART_SOCK].ch_fd != INVALID_FD
-	          || channel->ch_part[PART_SOCK].ch_head.rq_next != NULL
-		  || channel->ch_part[PART_SOCK].ch_json_head.jq_next != NULL;
+		|| channel->ch_part[PART_SOCK].ch_head.rq_next != NULL
+		|| channel->ch_part[PART_SOCK].ch_json_head.jq_next != NULL;
     has_out_msg = channel->ch_part[PART_OUT].ch_fd != INVALID_FD
 		  || channel->ch_part[PART_OUT].ch_head.rq_next != NULL
 		  || channel->ch_part[PART_OUT].ch_json_head.jq_next != NULL;
@@ -2207,14 +2207,7 @@ channel_exe_cmd(channel_T *channel, ch_part_T part, typval_T *argv)
 	ex_redraw(&ea);
 	showruler(FALSE);
 	setcursor();
-	out_flush();
-#ifdef FEAT_GUI
-	if (gui.in_use)
-	{
-	    gui_update_cursor(TRUE, FALSE);
-	    gui_mch_flush();
-	}
-#endif
+	out_flush_cursor(TRUE, FALSE);
     }
     else if (STRCMP(cmd, "expr") == 0 || STRCMP(cmd, "call") == 0)
     {
@@ -2898,8 +2891,6 @@ channel_close(channel_T *channel, int invoke_close_cb)
 	      channel->ch_close_cb = NULL;
 	      channel->ch_close_partial = NULL;
 
-	      --channel->ch_refcount;
-
 	      if (channel_need_redraw)
 	      {
 		  channel_need_redraw = FALSE;
@@ -2910,6 +2901,8 @@ channel_close(channel_T *channel, int invoke_close_cb)
 		  /* any remaining messages are useless now */
 		  for (part = PART_SOCK; part < PART_IN; ++part)
 		      drop_messages(channel, part);
+
+	      --channel->ch_refcount;
 	}
     }
 
@@ -2985,8 +2978,7 @@ channel_clear_one(channel_T *channel, ch_part_T part)
 channel_clear(channel_T *channel)
 {
     ch_log(channel, "Clearing channel");
-    vim_free(channel->ch_hostname);
-    channel->ch_hostname = NULL;
+    VIM_CLEAR(channel->ch_hostname);
     channel_clear_one(channel, PART_SOCK);
     channel_clear_one(channel, PART_OUT);
     channel_clear_one(channel, PART_ERR);
@@ -3313,11 +3305,12 @@ channel_read(channel_T *channel, ch_part_T part, char *func)
 /*
  * Read from RAW or NL "channel"/"part".  Blocks until there is something to
  * read or the timeout expires.
+ * When "raw" is TRUE don't block waiting on a NL.
  * Returns what was read in allocated memory.
  * Returns NULL in case of error or timeout.
  */
-    char_u *
-channel_read_block(channel_T *channel, ch_part_T part, int timeout)
+    static char_u *
+channel_read_block(channel_T *channel, ch_part_T part, int timeout, int raw)
 {
     char_u	*buf;
     char_u	*msg;
@@ -3327,7 +3320,7 @@ channel_read_block(channel_T *channel, ch_part_T part, int timeout)
     readq_T	*node;
 
     ch_log(channel, "Blocking %s read, timeout: %d msec",
-				    mode == MODE_RAW ? "RAW" : "NL", timeout);
+				     mode == MODE_RAW ? "RAW" : "NL", timeout);
 
     while (TRUE)
     {
@@ -3340,6 +3333,10 @@ channel_read_block(channel_T *channel, ch_part_T part, int timeout)
 		break;
 	    if (channel_collapse(channel, part, mode == MODE_NL) == OK)
 		continue;
+	    /* If not blocking or nothing more is coming then return what we
+	     * have. */
+	    if (raw || fd == INVALID_FD)
+		break;
 	}
 
 	/* Wait for up to the channel timeout. */
@@ -3366,11 +3363,16 @@ channel_read_block(channel_T *channel, ch_part_T part, int timeout)
 	nl = channel_first_nl(node);
 
 	/* Convert NUL to NL, the internal representation. */
-	for (p = buf; p < nl && p < buf + node->rq_buflen; ++p)
+	for (p = buf; (nl == NULL || p < nl) && p < buf + node->rq_buflen; ++p)
 	    if (*p == NUL)
 		*p = NL;
 
-	if (nl + 1 == buf + node->rq_buflen)
+	if (nl == NULL)
+	{
+	    /* must be a closed channel with missing NL */
+	    msg = channel_get(channel, part);
+	}
+	else if (nl + 1 == buf + node->rq_buflen)
 	{
 	    /* get the whole buffer */
 	    msg = channel_get(channel, part);
@@ -3513,7 +3515,8 @@ common_channel_read(typval_T *argvars, typval_T *rettv, int raw)
 	    timeout = opt.jo_timeout;
 
 	if (raw || mode == MODE_RAW || mode == MODE_NL)
-	    rettv->vval.v_string = channel_read_block(channel, part, timeout);
+	    rettv->vval.v_string = channel_read_block(channel, part,
+								 timeout, raw);
 	else
 	{
 	    if (opt.jo_set & JO_ID)
@@ -3955,7 +3958,8 @@ ch_raw_common(typval_T *argvars, typval_T *rettv, int eval)
 	    timeout = opt.jo_timeout;
 	else
 	    timeout = channel_get_timeout(channel, part_read);
-	rettv->vval.v_string = channel_read_block(channel, part_read, timeout);
+	rettv->vval.v_string = channel_read_block(channel, part_read,
+								timeout, TRUE);
     }
     free_job_options(&opt);
 }
@@ -4454,7 +4458,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 	return OK;
     if (tv->v_type != VAR_DICT)
     {
-	EMSG(_(e_invarg));
+	EMSG(_(e_dictreq));
 	return FAIL;
     }
     dict = tv->vval.v_dict;
@@ -4537,7 +4541,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_io_buf[part] = get_tv_number(item);
 		if (opt->jo_io_buf[part] <= 0)
 		{
-		    EMSG2(_(e_invarg2), get_tv_string(item));
+		    EMSG3(_(e_invargNval), hi->hi_key, get_tv_string(item));
 		    return FAIL;
 		}
 		if (buflist_findnr(opt->jo_io_buf[part]) == NULL)
@@ -4586,7 +4590,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		*lp = get_tv_number(item);
 		if (*lp < 0)
 		{
-		    EMSG2(_(e_invarg2), get_tv_string(item));
+		    EMSG3(_(e_invargNval), hi->hi_key, get_tv_string(item));
 		    return FAIL;
 		}
 	    }
@@ -4597,7 +4601,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_set |= JO_CHANNEL;
 		if (item->v_type != VAR_CHANNEL)
 		{
-		    EMSG2(_(e_invarg2), "channel");
+		    EMSG2(_(e_invargval), "channel");
 		    return FAIL;
 		}
 		opt->jo_channel = item->vval.v_channel;
@@ -4610,7 +4614,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_callback = get_callback(item, &opt->jo_partial);
 		if (opt->jo_callback == NULL)
 		{
-		    EMSG2(_(e_invarg2), "callback");
+		    EMSG2(_(e_invargval), "callback");
 		    return FAIL;
 		}
 	    }
@@ -4622,7 +4626,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_out_cb = get_callback(item, &opt->jo_out_partial);
 		if (opt->jo_out_cb == NULL)
 		{
-		    EMSG2(_(e_invarg2), "out_cb");
+		    EMSG2(_(e_invargval), "out_cb");
 		    return FAIL;
 		}
 	    }
@@ -4634,7 +4638,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_err_cb = get_callback(item, &opt->jo_err_partial);
 		if (opt->jo_err_cb == NULL)
 		{
-		    EMSG2(_(e_invarg2), "err_cb");
+		    EMSG2(_(e_invargval), "err_cb");
 		    return FAIL;
 		}
 	    }
@@ -4646,7 +4650,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_close_cb = get_callback(item, &opt->jo_close_partial);
 		if (opt->jo_close_cb == NULL)
 		{
-		    EMSG2(_(e_invarg2), "close_cb");
+		    EMSG2(_(e_invargval), "close_cb");
 		    return FAIL;
 		}
 	    }
@@ -4659,7 +4663,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		    never = TRUE;
 		else if (STRCMP(val, "auto") != 0)
 		{
-		    EMSG2(_(e_invarg2), "drop");
+		    EMSG3(_(e_invargNval), "drop", val);
 		    return FAIL;
 		}
 		opt->jo_drop_never = never;
@@ -4672,7 +4676,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_exit_cb = get_callback(item, &opt->jo_exit_partial);
 		if (opt->jo_exit_cb == NULL)
 		{
-		    EMSG2(_(e_invarg2), "exit_cb");
+		    EMSG2(_(e_invargval), "exit_cb");
 		    return FAIL;
 		}
 	    }
@@ -4685,7 +4689,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_term_name = get_tv_string_chk(item);
 		if (opt->jo_term_name == NULL)
 		{
-		    EMSG2(_(e_invarg2), "term_name");
+		    EMSG2(_(e_invargval), "term_name");
 		    return FAIL;
 		}
 	    }
@@ -4696,7 +4700,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		val = get_tv_string(item);
 		if (STRCMP(val, "open") != 0 && STRCMP(val, "close") != 0)
 		{
-		    EMSG2(_(e_invarg2), val);
+		    EMSG3(_(e_invargNval), "term_finish", val);
 		    return FAIL;
 		}
 		opt->jo_set2 |= JO2_TERM_FINISH;
@@ -4720,7 +4724,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		}
 		if (p == NULL)
 		{
-		    EMSG2(_(e_invarg2), "term_opencmd");
+		    EMSG2(_(e_invargval), "term_opencmd");
 		    return FAIL;
 		}
 	    }
@@ -4734,7 +4738,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		p = opt->jo_eof_chars = get_tv_string_chk(item);
 		if (p == NULL)
 		{
-		    EMSG2(_(e_invarg2), "term_opencmd");
+		    EMSG2(_(e_invargval), "eof_chars");
 		    return FAIL;
 		}
 	    }
@@ -4789,7 +4793,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		opt->jo_cwd = get_tv_string_buf_chk(item, opt->jo_cwd_buf);
 		if (opt->jo_cwd == NULL || !mch_isdir(opt->jo_cwd))
 		{
-		    EMSG2(_(e_invarg2), "cwd");
+		    EMSG2(_(e_invargval), "cwd");
 		    return FAIL;
 		}
 		opt->jo_set |= JO2_CWD;
@@ -4834,7 +4838,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 		    opt->jo_part = PART_OUT;
 		else
 		{
-		    EMSG2(_(e_invarg2), val);
+		    EMSG3(_(e_invargNval), "part", val);
 		    return FAIL;
 		}
 	    }
@@ -4854,7 +4858,7 @@ get_job_options(typval_T *tv, jobopt_T *opt, int supported, int supported2)
 							     opt->jo_soe_buf);
 		if (opt->jo_stoponexit == NULL)
 		{
-		    EMSG2(_(e_invarg2), "stoponexit");
+		    EMSG2(_(e_invargval), "stoponexit");
 		    return FAIL;
 		}
 	    }

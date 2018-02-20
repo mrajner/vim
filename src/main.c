@@ -264,7 +264,7 @@ main
 	 * Hint: to avoid this when typing a command use a forward slash.
 	 * If the cd fails, it doesn't matter.
 	 */
-	(void)vim_chdirfile(params.fname);
+	(void)vim_chdirfile(params.fname, "drop");
 	if (start_dir != NULL)
 	    mch_dirname(start_dir, MAXPATHL);
     }
@@ -299,7 +299,7 @@ main
 	params.want_full_screen = FALSE;
 #endif
 
-#if defined(FEAT_GUI_MAC) && defined(MACOS_X_UNIX)
+#if defined(FEAT_GUI_MAC) && defined(MACOS_X_DARWIN)
     /* When the GUI is started from Finder, need to display messages in a
      * message box.  isatty(2) returns TRUE anyway, thus we need to check the
      * name to know we're not started from a terminal. */
@@ -314,7 +314,7 @@ main
 						&& STRCMP(NameBuff, "/") == 0)
 	{
 	    if (params.fname != NULL)
-		(void)vim_chdirfile(params.fname);
+		(void)vim_chdirfile(params.fname, "drop");
 	    else
 	    {
 		expand_env((char_u *)"$HOME", NameBuff, MAXPATHL);
@@ -358,6 +358,13 @@ main
      * Print a warning if stdout is not a terminal.
      */
     check_tty(&params);
+
+#ifdef _IOLBF
+    /* Ensure output works usefully without a tty: buffer lines instead of
+     * fully buffered. */
+    if (silent_mode)
+	setvbuf(stdout, NULL, _IOLBF, 0);
+#endif
 
     /* This message comes before term inits, but after setting "silent_mode"
      * when the input is not a tty. */
@@ -619,7 +626,7 @@ vim_main2(void)
 # ifdef FEAT_SUN_WORKSHOP
 	if (!usingSunWorkShop)
 # endif
-	    gui_wait_for_chars(50L);
+	    gui_wait_for_chars(50L, typebuf.tb_change_cnt);
 	TIME_MSG("GUI delay");
     }
 #endif
@@ -927,13 +934,6 @@ common_init(mparm_T *paramp)
     qnx_init();		/* PhAttach() for clipboard, (and gui) */
 #endif
 
-#ifdef MAC_OS_CLASSIC
-    /* Prepare for possibly starting GUI sometime */
-    /* Macintosh needs this before any memory is allocated. */
-    gui_prepare(&paramp->argc, paramp->argv);
-    TIME_MSG("GUI prepared");
-#endif
-
     /* Init the table of Normal mode commands. */
     init_normal_cmds();
 
@@ -984,7 +984,7 @@ common_init(mparm_T *paramp)
 #ifdef FEAT_SUN_WORKSHOP
     findYourself(paramp->argv[0]);
 #endif
-#if defined(FEAT_GUI) && !defined(MAC_OS_CLASSIC)
+#if defined(FEAT_GUI)
     /* Prepare for possibly starting GUI sometime */
     gui_prepare(&paramp->argc, paramp->argv);
     TIME_MSG("GUI prepared");
@@ -1201,13 +1201,10 @@ main_loop(
 #ifdef FEAT_AUTOCMD
 	    /* Trigger TextChanged if b:changedtick differs. */
 	    if (!finish_op && has_textchanged()
-		    && last_changedtick != CHANGEDTICK(curbuf))
+		    && curbuf->b_last_changedtick != CHANGEDTICK(curbuf))
 	    {
-		if (last_changedtick_buf == curbuf)
-		    apply_autocmds(EVENT_TEXTCHANGED, NULL, NULL,
-							       FALSE, curbuf);
-		last_changedtick_buf = curbuf;
-		last_changedtick = CHANGEDTICK(curbuf);
+		apply_autocmds(EVENT_TEXTCHANGED, NULL, NULL, FALSE, curbuf);
+		curbuf->b_last_changedtick = CHANGEDTICK(curbuf);
 	    }
 #endif
 
@@ -1249,7 +1246,11 @@ main_loop(
 	    if (VIsual_active)
 		update_curbuf(INVERTED);/* update inverted part */
 	    else if (must_redraw)
+	    {
+		mch_disable_flush();	/* Stop issuing gui_mch_flush(). */
 		update_screen(0);
+		mch_enable_flush();
+	    }
 	    else if (redraw_cmdline || clear_cmdline)
 		showmode();
 	    redraw_statuslines();
@@ -1290,11 +1291,13 @@ main_loop(
 			|| conceal_cursor_line(curwin)
 			|| need_cursor_line_redraw))
 	    {
+		mch_disable_flush();	/* Stop issuing gui_mch_flush(). */
 		if (conceal_old_cursor_line != conceal_new_cursor_line
 			&& conceal_old_cursor_line
 						<= curbuf->b_ml.ml_line_count)
 		    update_single_line(curwin, conceal_old_cursor_line);
 		update_single_line(curwin, conceal_new_cursor_line);
+		mch_enable_flush();
 		curwin->w_valid &= ~VALID_CROW;
 	    }
 # endif
@@ -1439,9 +1442,14 @@ getout(int exitval)
 		buf = wp->w_buffer;
 		if (CHANGEDTICK(buf) != -1)
 		{
+		    bufref_T bufref;
+
+		    set_bufref(&bufref, buf);
 		    apply_autocmds(EVENT_BUFWINLEAVE, buf->b_fname,
 						    buf->b_fname, FALSE, buf);
-		    CHANGEDTICK(buf) = -1;  /* note that we did it already */
+		    if (bufref_valid(&bufref))
+			CHANGEDTICK(buf) = -1;  /* note we did it already */
+
 		    /* start all over, autocommands may mess up the lists */
 		    next_tp = first_tabpage;
 		    break;
@@ -1724,7 +1732,7 @@ parse_command_name(mparm_T *parmp)
 
     initstr = gettail((char_u *)parmp->argv[0]);
 
-#ifdef MACOS_X_UNIX
+#ifdef FEAT_GUI_MAC
     /* An issue has been seen when launching Vim in such a way that
      * $PWD/$ARGV[0] or $ARGV[0] is not the absolute path to the
      * executable or a symbolic link of it. Until this issue is resolved
@@ -2228,7 +2236,7 @@ command_line_scan(mparm_T *parmp)
 		    argv_idx = -1;
 		    break;
 		}
-		/*FALLTHROUGH*/
+		/* FALLTHROUGH */
 	    case 'S':		/* "-S {file}" execute Vim script */
 	    case 'i':		/* "-i {viminfo}" use for viminfo */
 #ifndef FEAT_DIFF
@@ -2386,7 +2394,7 @@ scripterror:
 			argv_idx = -1;
 			break;
 		    }
-		    /*FALLTHROUGH*/
+		    /* FALLTHROUGH */
 		case 'W':	/* "-W {scriptout}" overwrite script file */
 		    if (scriptout != NULL)
 			goto scripterror;
@@ -2528,7 +2536,7 @@ scripterror:
 
 /*
  * Print a warning if stdout is not a terminal.
- * When starting in Ex mode and commands come from a file, set Silent mode.
+ * When starting in Ex mode and commands come from a file, set silent_mode.
  */
     static void
 check_tty(mparm_T *parmp)
@@ -2619,7 +2627,7 @@ read_stdin(void)
 #if defined(HAS_SWAP_EXISTS_ACTION)
     check_swap_exists_action();
 #endif
-#if !(defined(AMIGA) || defined(MACOS))
+#if !(defined(AMIGA) || defined(MACOS_X))
     /*
      * Close stdin and dup it from stderr.  Required for GPM to work
      * properly, and for running external commands.
@@ -3680,12 +3688,18 @@ prepare_server(mparm_T *parmp)
     /*
      * Register for remote command execution with :serversend and --remote
      * unless there was a -X or a --servername '' on the command line.
-     * Only register nongui-vim's with an explicit --servername argument.
+     * Only register nongui-vim's with an explicit --servername argument,
+     * or when compiling with autoservername.
      * When running as root --servername is also required.
      */
     if (X_DISPLAY != NULL && parmp->servername != NULL && (
-#  ifdef FEAT_GUI
-		(gui.in_use
+#  if defined(FEAT_AUTOSERVERNAME) || defined(FEAT_GUI)
+		(
+#   if defined(FEAT_AUTOSERVERNAME)
+		    1
+#   else
+		    gui.in_use
+#   endif
 #   ifdef UNIX
 		 && getuid() != ROOT_UID
 #   endif
@@ -3937,8 +3951,7 @@ cmdsrv_main(
 		{
 		    /* Output error from remote */
 		    mch_errmsg((char *)res);
-		    vim_free(res);
-		    res = NULL;
+		    VIM_CLEAR(res);
 		}
 		mch_errmsg(_(": Send expression failed.\n"));
 	    }
@@ -4180,11 +4193,12 @@ eval_client_expr_to_string(char_u *expr)
     char_u	*res;
     int		save_dbl = debug_break_level;
     int		save_ro = redir_off;
-    void	*fc;
+    void	*fc = NULL;
 
     /* Evaluate the expression at the toplevel, don't use variables local to
-     * the calling function. */
-    fc = clear_current_funccal();
+     * the calling function. Except when in debug mode. */
+    if (!debug_mode)
+	fc = clear_current_funccal();
 
      /* Disable debugging, otherwise Vim hangs, waiting for "cont" to be
       * typed. */
@@ -4201,16 +4215,13 @@ eval_client_expr_to_string(char_u *expr)
     --emsg_silent;
     if (emsg_silent < 0)
 	emsg_silent = 0;
-    restore_current_funccal(fc);
+    if (fc != NULL)
+	restore_current_funccal(fc);
 
     /* A client can tell us to redraw, but not to display the cursor, so do
      * that here. */
     setcursor();
-    out_flush();
-#ifdef FEAT_GUI
-    if (gui.in_use)
-	gui_update_cursor(FALSE, FALSE);
-#endif
+    out_flush_cursor(FALSE, FALSE);
 
     return res;
 }
