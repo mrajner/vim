@@ -1261,14 +1261,14 @@ msgstr "1 więcej plik do edycji.  Mimo to wyjść?"
 
 #, c-format
 msgid "%d more files to edit.  Quit anyway?"
-msgstr "jeszcze %d plików do edycji.  Mimo to wyjść?"
+msgstr "jeszcze %d pliki/ów do edycji.  Mimo to wyjść?"
 
 msgid "E173: 1 more file to edit"
 msgstr "E173: 1 więcej plik do edycji"
 
 #, c-format
 msgid "E173: %ld more files to edit"
-msgstr "E173: jeszcze %ld plików do edycji"
+msgstr "E173: jeszcze %ld pliki/ów do edycji"
 
 msgid "E174: Command already exists: add ! to replace it"
 msgstr "E174: Komenda już istnieje; aby ją przedefiniować stosuj !"
@@ -2873,7 +2873,7 @@ msgstr "Niewłaściwy argument dla"
 
 #, c-format
 msgid "%d files to edit\n"
-msgstr "%d plików do edycji\n"
+msgstr "%d pliki/ów do edycji\n"
 
 msgid "netbeans is not supported with this GUI\n"
 msgstr "netbeans nie są obsługiwane przez to GUI\n"
