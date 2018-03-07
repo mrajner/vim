@@ -147,7 +147,6 @@ syn keyword readlineVariable    contained
                               \ show-mode-in-prompt
                               \ skip-completed-text
                               \ visible-stats
-                              \ colored-stats
 
 syn keyword readlineVariable    contained
                               \ nextgroup=readlineString
