@@ -3327,6 +3327,12 @@ syn_regexec(
 	profile_start(&pt);
 #endif
 
+    if (rmp->regprog == NULL)
+	// This can happen if a previous call to vim_regexec_multi() tried to
+	// use the NFA engine, which resulted in NFA_TOO_EXPENSIVE, and
+	// compiling the pattern with the other engine fails.
+	return FALSE;
+
     rmp->rmm_maxcol = syn_buf->b_p_smc;
     r = vim_regexec_multi(rmp, syn_win, syn_buf, lnum, col,
 #ifdef FEAT_RELTIME
@@ -7224,6 +7230,8 @@ load_colors(char_u *name)
     buf = alloc((unsigned)(STRLEN(name) + 12));
     if (buf != NULL)
     {
+	apply_autocmds(EVENT_COLORSCHEMEPRE, name,
+					       curbuf->b_fname, FALSE, curbuf);
 	sprintf((char *)buf, "colors/%s.vim", name);
 	retval = source_runtime(buf, DIP_START + DIP_OPT);
 	vim_free(buf);
@@ -9852,7 +9860,9 @@ syn_id2colors(int hl_id, guicolor_T *fgp, guicolor_T *bgp)
 }
 #endif
 
-#if defined(FEAT_TERMINAL) || defined(PROTO)
+#if (defined(WIN3264) \
+	&& !defined(FEAT_GUI_W32) \
+	&& defined(FEAT_TERMGUICOLORS)) || defined(PROTO)
     void
 syn_id2cterm_bg(int hl_id, int *fgp, int *bgp)
 {
@@ -10044,11 +10054,11 @@ highlight_changed(void)
 #ifdef USER_HIGHLIGHT
     char_u      userhl[10];
 # ifdef FEAT_STL_OPT
-    int		id_SNC = -1;
     int		id_S = -1;
+    int		id_SNC = 0;
 #  ifdef FEAT_TERMINAL
-    int		id_ST = -1;
-    int		id_STNC = -1;
+    int		id_ST = 0;
+    int		id_STNC = 0;
 #  endif
     int		hlcnt;
 # endif

@@ -83,7 +83,6 @@ static void	ex_abclear(exarg_T *eap);
 #endif
 static void	ex_autocmd(exarg_T *eap);
 static void	ex_doautocmd(exarg_T *eap);
-#ifdef FEAT_LISTCMDS
 static void	ex_bunload(exarg_T *eap);
 static void	ex_buffer(exarg_T *eap);
 static void	ex_bmodified(exarg_T *eap);
@@ -91,20 +90,6 @@ static void	ex_bnext(exarg_T *eap);
 static void	ex_bprevious(exarg_T *eap);
 static void	ex_brewind(exarg_T *eap);
 static void	ex_blast(exarg_T *eap);
-#else
-# define ex_bunload		ex_ni
-# define ex_buffer		ex_ni
-# define ex_bmodified		ex_ni
-# define ex_bnext		ex_ni
-# define ex_bprevious		ex_ni
-# define ex_brewind		ex_ni
-# define ex_blast		ex_ni
-# define buflist_list		ex_ni
-# define ex_checktime		ex_ni
-#endif
-#if !defined(FEAT_LISTCMDS)
-# define ex_buffer_all		ex_ni
-#endif
 static char_u	*getargcmd(char_u **);
 static char_u	*skip_cmd_arg(char_u *p, int rembs);
 static int	getargopt(exarg_T *eap);
@@ -184,12 +169,6 @@ static void	ex_goto(exarg_T *eap);
 static void	ex_shell(exarg_T *eap);
 static void	ex_preserve(exarg_T *eap);
 static void	ex_recover(exarg_T *eap);
-#ifndef FEAT_LISTCMDS
-# define ex_argedit		ex_ni
-# define ex_argadd		ex_ni
-# define ex_argdelete		ex_ni
-# define ex_listdo		ex_ni
-#endif
 static void	ex_mode(exarg_T *eap);
 static void	ex_wrongmodifier(exarg_T *eap);
 static void	ex_find(exarg_T *eap);
@@ -2838,7 +2817,6 @@ do_one_cmd(
 	    goto doend;
     }
 
-#ifdef FEAT_LISTCMDS
     /*
      * Accept buffer name.  Cannot be used at the same time with a buffer
      * number.  Don't do this for a user command.
@@ -2867,7 +2845,6 @@ do_one_cmd(
 	ea.addr_count = 1;
 	ea.arg = skipwhite(p);
     }
-#endif
 
     /* The :try command saves the emsg_silent flag, reset it here when
      * ":silent! try" was used, it should only apply to :try itself. */
@@ -3787,7 +3764,7 @@ set_one_cmd_context(
 	     * A full match ~user<Tab> will be replaced by user's home
 	     * directory i.e. something like ~user<Tab> -> /home/user/ */
 	    if (*p == NUL && p > xp->xp_pattern + 1
-				       && match_user(xp->xp_pattern + 1) == 1)
+				       && match_user(xp->xp_pattern + 1) >= 1)
 	    {
 		xp->xp_context = EXPAND_USER;
 		++xp->xp_pattern;
@@ -4079,8 +4056,16 @@ set_one_cmd_context(
 	case CMD_unlet:
 	    while ((xp->xp_pattern = vim_strchr(arg, ' ')) != NULL)
 		arg = xp->xp_pattern + 1;
+
 	    xp->xp_context = EXPAND_USER_VARS;
 	    xp->xp_pattern = arg;
+
+	    if (*xp->xp_pattern == '$')
+	    {
+		xp->xp_context = EXPAND_ENV_VARS;
+		++xp->xp_pattern;
+	    }
+
 	    break;
 
 	case CMD_function:
@@ -4108,7 +4093,6 @@ set_one_cmd_context(
 	    set_context_in_sign_cmd(xp, arg);
 	    break;
 #endif
-#ifdef FEAT_LISTCMDS
 	case CMD_bdelete:
 	case CMD_bwipeout:
 	case CMD_bunload:
@@ -4121,7 +4105,6 @@ set_one_cmd_context(
 	    xp->xp_context = EXPAND_BUFFERS;
 	    xp->xp_pattern = arg;
 	    break;
-#endif
 #ifdef FEAT_USR_CMDS
 	case CMD_USER:
 	case CMD_USER_BUF:
@@ -4292,6 +4275,13 @@ set_one_cmd_context(
 	    xp->xp_pattern = arg;
 	    break;
 #endif
+
+	case CMD_argdelete:
+	    while ((xp->xp_pattern = vim_strchr(arg, ' ')) != NULL)
+		arg = xp->xp_pattern + 1;
+	    xp->xp_context = EXPAND_ARGLIST;
+	    xp->xp_pattern = arg;
+	    break;
 
 #endif /* FEAT_CMDL_COMPL */
 
@@ -5326,6 +5316,22 @@ skip_cmd_arg(
     return p;
 }
 
+#if defined(FEAT_MBYTE) || defined(PROTO)
+    int
+get_bad_opt(char_u *p, exarg_T *eap)
+{
+    if (STRICMP(p, "keep") == 0)
+	eap->bad_char = BAD_KEEP;
+    else if (STRICMP(p, "drop") == 0)
+	eap->bad_char = BAD_DROP;
+    else if (MB_BYTE2LEN(*p) == 1 && p[1] == NUL)
+	eap->bad_char = *p;
+    else
+	return FAIL;
+    return OK;
+}
+#endif
+
 /*
  * Get "++opt=arg" argument.
  * Return FAIL or OK.
@@ -5405,6 +5411,7 @@ getargopt(exarg_T *eap)
 #endif
 	if (check_ff_value(eap->cmd + eap->force_ff) == FAIL)
 	    return FAIL;
+	eap->force_ff = eap->cmd[eap->force_ff];
 #ifdef FEAT_MBYTE
     }
     else if (pp == &eap->force_enc)
@@ -5417,14 +5424,7 @@ getargopt(exarg_T *eap)
     {
 	/* Check ++bad= argument.  Must be a single-byte character, "keep" or
 	 * "drop". */
-	p = eap->cmd + bad_char_idx;
-	if (STRICMP(p, "keep") == 0)
-	    eap->bad_char = BAD_KEEP;
-	else if (STRICMP(p, "drop") == 0)
-	    eap->bad_char = BAD_DROP;
-	else if (MB_BYTE2LEN(*p) == 1 && p[1] == NUL)
-	    eap->bad_char = *p;
-	else
+	if (get_bad_opt(eap->cmd + bad_char_idx, eap) == FAIL)
 	    return FAIL;
     }
 #endif
@@ -5491,7 +5491,7 @@ ex_abclear(exarg_T *eap)
 ex_autocmd(exarg_T *eap)
 {
     /*
-     * Disallow auto commands from .exrc and .vimrc in current
+     * Disallow autocommands from .exrc and .vimrc in current
      * directory for security reasons.
      */
     if (secure)
@@ -5521,7 +5521,6 @@ ex_doautocmd(exarg_T *eap)
 	do_modelines(0);
 }
 
-#ifdef FEAT_LISTCMDS
 /*
  * :[N]bunload[!] [N] [bufname] unload buffer
  * :[N]bdelete[!] [N] [bufname] delete buffer from buffer list
@@ -5620,7 +5619,6 @@ ex_blast(exarg_T *eap)
     if (eap->do_ecmd_cmd != NULL)
 	do_cmdline_cmd(eap->do_ecmd_cmd);
 }
-#endif
 
     int
 ends_excmd(int c)
@@ -5879,6 +5877,7 @@ static struct
     char    *name;
 } command_complete[] =
 {
+    {EXPAND_ARGLIST, "arglist"},
     {EXPAND_AUGROUP, "augroup"},
     {EXPAND_BEHAVE, "behave"},
     {EXPAND_BUFFERS, "buffer"},
@@ -7352,7 +7351,8 @@ ex_close(exarg_T *eap)
 	{
 	    if (eap->addr_count == 0)
 		ex_win_close(eap->forceit, curwin, NULL);
-	    else {
+	    else
+	    {
 		FOR_ALL_WINDOWS(win)
 		{
 		    winnr++;
@@ -7980,7 +7980,6 @@ alist_unlink(alist_T *al)
     }
 }
 
-#if defined(FEAT_LISTCMDS) || defined(HAVE_DROP_FILE) || defined(PROTO)
 /*
  * Create a new argument list and use it for the current window.
  */
@@ -8000,7 +7999,6 @@ alist_new(void)
 	alist_init(curwin->w_alist);
     }
 }
-#endif
 
 #if !defined(UNIX) || defined(PROTO)
 /*
@@ -8202,6 +8200,9 @@ ex_splitview(exarg_T *eap)
 #ifdef FEAT_BROWSE
     int		browse_flag = cmdmod.browse;
 #endif
+    int		use_tab = eap->cmdidx == CMD_tabedit
+		       || eap->cmdidx == CMD_tabfind
+		       || eap->cmdidx == CMD_tabnew;
 
 #ifdef FEAT_GUI
     need_mouse_correct = TRUE;
@@ -8250,7 +8251,9 @@ ex_splitview(exarg_T *eap)
 	}
 	else
 	{
-	    fname = do_browse(0, (char_u *)_("Edit File in new window"),
+	    fname = do_browse(0, (char_u *)(use_tab
+			? _("Edit File in new tab page")
+			: _("Edit File in new window")),
 					  eap->arg, NULL, NULL, NULL, curbuf);
 	    if (fname == NULL)
 		goto theend;
@@ -8263,9 +8266,7 @@ ex_splitview(exarg_T *eap)
     /*
      * Either open new tab page or split the window.
      */
-    if (eap->cmdidx == CMD_tabedit
-	    || eap->cmdidx == CMD_tabfind
-	    || eap->cmdidx == CMD_tabnew)
+    if (use_tab)
     {
 	if (win_new_tabpage(cmdmod.tab != 0 ? cmdmod.tab
 			 : eap->addr_count == 0 ? 0
@@ -8672,9 +8673,7 @@ do_exedit(
 		    + (eap->forceit ? ECMD_FORCEIT : 0)
 		      /* after a split we can use an existing buffer */
 		    + (old_curwin != NULL ? ECMD_OLDBUF : 0)
-#ifdef FEAT_LISTCMDS
 		    + (eap->cmdidx == CMD_badd ? ECMD_ADDBUF : 0 )
-#endif
 		    , old_curwin == NULL ? curwin : NULL) == FAIL)
 	{
 	    /* Editing the file failed.  If the window was split, close it. */
@@ -9158,6 +9157,11 @@ do_sleep(long msec)
 	parse_queued_messages();
 #endif
     }
+
+    // If CTRL-C was typed to interrupt the sleep, drop the CTRL-C from the
+    // input buffer, otherwise a following call to input() fails.
+    if (got_int)
+	(void)vpeekc();
 }
 
     static void
@@ -9634,7 +9638,8 @@ ex_redir(exarg_T *eap)
 
 		browseFile = do_browse(BROWSE_SAVE,
 			(char_u *)_("Save Redirection"),
-			fname, NULL, NULL, BROWSE_FILTER_ALL_FILES, curbuf);
+			fname, NULL, NULL,
+			(char_u *)_(BROWSE_FILTER_ALL_FILES), curbuf);
 		if (browseFile == NULL)
 		    return;		/* operation cancelled */
 		vim_free(fname);
@@ -9860,7 +9865,8 @@ ex_mkrc(
 		eap->cmdidx == CMD_mksession ? (char_u *)_("Save Session") :
 # endif
 		(char_u *)_("Save Setup"),
-		fname, (char_u *)"vim", NULL, BROWSE_FILTER_MACROS, NULL);
+		fname, (char_u *)"vim", NULL,
+		(char_u *)_(BROWSE_FILTER_MACROS), NULL);
 	if (browseFile == NULL)
 	    goto theend;
 	fname = browseFile;
@@ -10336,14 +10342,14 @@ exec_normal_cmd(char_u *cmd, int remap, int silent)
 {
     /* Stuff the argument into the typeahead buffer. */
     ins_typebuf(cmd, remap, 0, TRUE, silent);
-    exec_normal(FALSE);
+    exec_normal(FALSE, FALSE);
 }
 
 /*
  * Execute normal_cmd() until there is no typeahead left.
  */
     void
-exec_normal(int was_typed)
+exec_normal(int was_typed, int may_use_terminal_loop UNUSED)
 {
     oparg_T	oa;
 
@@ -10353,7 +10359,21 @@ exec_normal(int was_typed)
 		    && typebuf.tb_len > 0)) && !got_int)
     {
 	update_topline_cursor();
-	normal_cmd(&oa, TRUE);	/* execute a Normal mode cmd */
+#ifdef FEAT_TERMINAL
+	if (may_use_terminal_loop && term_use_loop()
+		&& oa.op_type == OP_NOP && oa.regname == NUL
+		&& !VIsual_active)
+	{
+	    /* If terminal_loop() returns OK we got a key that is handled
+	     * in Normal model.  With FAIL we first need to position the
+	     * cursor and the screen needs to be redrawn. */
+	    if (terminal_loop(TRUE) == OK)
+		normal_cmd(&oa, TRUE);
+	}
+	else
+#endif
+	    /* execute a Normal mode cmd */
+	    normal_cmd(&oa, TRUE);
     }
 }
 
@@ -11065,9 +11085,12 @@ makeopens(
 #endif
 
     /*
-     * Close all windows but one.
+     * Close all windows and tabs but one.
      */
     if (put_line(fd, "silent only") == FAIL)
+	return FAIL;
+    if ((ssop_flags & SSOP_TABPAGES)
+	    && put_line(fd, "silent tabonly") == FAIL)
 	return FAIL;
 
     /*
@@ -11178,9 +11201,33 @@ makeopens(
      */
     tab_firstwin = firstwin;	/* first window in tab page "tabnr" */
     tab_topframe = topframe;
+    if ((ssop_flags & SSOP_TABPAGES))
+    {
+	int	num_tabs;
+
+	/*
+	 * Similar to ses_win_rec() below, populate the tab pages first so
+	 * later local options won't be copied to the new tabs.
+	 */
+	for (tabnr = 1; ; ++tabnr)
+	{
+	    tabpage_T *tp = find_tabpage(tabnr);
+
+	    if (tp == NULL)	/* done all tab pages */
+		break;
+
+	    if (tabnr > 1 && put_line(fd, "tabnew") == FAIL)
+		return FAIL;
+	}
+
+	num_tabs = tabnr - 1;
+	if (num_tabs > 1 && (fprintf(fd, "tabnext -%d", num_tabs - 1) < 0
+						       || put_eol(fd) == FAIL))
+	    return FAIL;
+    }
     for (tabnr = 1; ; ++tabnr)
     {
-	int	need_tabnew = FALSE;
+	int	need_tabnext = FALSE;
 	int	cnr = 1;
 
 	if ((ssop_flags & SSOP_TABPAGES))
@@ -11200,7 +11247,7 @@ makeopens(
 		tab_topframe = tp->tp_topframe;
 	    }
 	    if (tabnr > 1)
-		need_tabnew = TRUE;
+		need_tabnext = TRUE;
 	}
 
 	/*
@@ -11218,11 +11265,14 @@ makeopens(
 #endif
 		    )
 	    {
-		if (fputs(need_tabnew ? "tabedit " : "edit ", fd) < 0
+		if (need_tabnext && put_line(fd, "tabnext") == FAIL)
+		    return FAIL;
+		need_tabnext = FALSE;
+
+		if (fputs("edit ", fd) < 0
 			      || ses_fname(fd, wp->w_buffer, &ssop_flags, TRUE)
 								       == FAIL)
 		    return FAIL;
-		need_tabnew = FALSE;
 		if (!wp->w_arg_idx_invalid)
 		    edited_win = wp;
 		break;
@@ -11230,7 +11280,7 @@ makeopens(
 	}
 
 	/* If no file got edited create an empty tab page. */
-	if (need_tabnew && put_line(fd, "tabnew") == FAIL)
+	if (need_tabnext && put_line(fd, "tabnext") == FAIL)
 	    return FAIL;
 
 	/*
@@ -11273,7 +11323,10 @@ makeopens(
 	 * winminheight and winminwidth need to be set to avoid an error if the
 	 * user has set winheight or winwidth.
 	 */
-	if (put_line(fd, "set winminheight=1 winheight=1 winminwidth=1 winwidth=1") == FAIL)
+	if (put_line(fd, "set winminheight=0") == FAIL
+		|| put_line(fd, "set winheight=1") == FAIL
+		|| put_line(fd, "set winminwidth=0") == FAIL
+		|| put_line(fd, "set winwidth=1") == FAIL)
 	    return FAIL;
 	if (nr > 1 && ses_winsizes(fd, restore_size, tab_firstwin) == FAIL)
 	    return FAIL;
@@ -11330,7 +11383,7 @@ makeopens(
     /*
      * Wipe out an empty unnamed buffer we started in.
      */
-    if (put_line(fd, "if exists('s:wipebuf') && s:wipebuf != bufnr('%')")
+    if (put_line(fd, "if exists('s:wipebuf') && len(win_findbuf(s:wipebuf)) == 0")
 								       == FAIL)
 	return FAIL;
     if (put_line(fd, "  silent exe 'bwipe ' . s:wipebuf") == FAIL)
@@ -12208,14 +12261,23 @@ ex_set(exarg_T *eap)
 	(void)do_set(eap->arg, flags);
 }
 
-#ifdef FEAT_SEARCH_EXTRA
+#if defined(FEAT_SEARCH_EXTRA) || defined(PROTO)
+    void
+set_no_hlsearch(int flag)
+{
+    no_hlsearch = flag;
+# ifdef FEAT_EVAL
+    set_vim_var_nr(VV_HLSEARCH, !no_hlsearch && p_hls);
+# endif
+}
+
 /*
  * ":nohlsearch"
  */
     static void
 ex_nohlsearch(exarg_T *eap UNUSED)
 {
-    SET_NO_HLSEARCH(TRUE);
+    set_no_hlsearch(TRUE);
     redraw_all_later(SOME_VALID);
 }
 
