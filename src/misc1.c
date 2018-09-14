@@ -3747,17 +3747,17 @@ prompt_for_number(int *mouse_used)
     else
 	MSG_PUTS(_("Type number and <Enter> (empty cancels): "));
 
-    /* Set the state such that text can be selected/copied/pasted and we still
-     * get mouse events. */
+    // Set the state such that text can be selected/copied/pasted and we still
+    // get mouse events. redraw_after_callback() will not redraw if cmdline_row
+    // is zero.
     save_cmdline_row = cmdline_row;
     cmdline_row = 0;
     save_State = State;
-    State = ASKMORE;	/* prevents a screen update when using a timer */
+    State = CMDLINE;
 #ifdef FEAT_MOUSE
-    /* May show different mouse shape. */
+    // May show different mouse shape.
     setmouse();
 #endif
-
 
     i = get_number(TRUE, mouse_used);
     if (KeyTyped)
@@ -3773,7 +3773,7 @@ prompt_for_number(int *mouse_used)
 	cmdline_row = save_cmdline_row;
     State = save_State;
 #ifdef FEAT_MOUSE
-    /* May need to restore mouse shape. */
+    // May need to restore mouse shape.
     setmouse();
 #endif
 
@@ -3802,24 +3802,12 @@ msgmore(long n)
 
     if (pn > p_report)
     {
-	if (pn == 1)
-	{
-	    if (n > 0)
-		vim_strncpy(msg_buf, (char_u *)_("1 more line"),
-							     MSG_BUF_LEN - 1);
-	    else
-		vim_strncpy(msg_buf, (char_u *)_("1 line less"),
-							     MSG_BUF_LEN - 1);
-	}
+	if (n > 0)
+	    vim_snprintf((char *)msg_buf, MSG_BUF_LEN,
+		    NGETTEXT("%ld more line", "%ld more lines", pn), pn);
 	else
-	{
-	    if (n > 0)
-		vim_snprintf((char *)msg_buf, MSG_BUF_LEN,
-						     _("%ld more lines"), pn);
-	    else
-		vim_snprintf((char *)msg_buf, MSG_BUF_LEN,
-						    _("%ld fewer lines"), pn);
-	}
+	    vim_snprintf((char *)msg_buf, MSG_BUF_LEN,
+		    NGETTEXT("%ld line less", "%ld fewer lines", pn), pn);
 	if (got_int)
 	    vim_strcat(msg_buf, (char_u *)_(" (Interrupted)"), MSG_BUF_LEN);
 	if (msg(msg_buf))
@@ -4729,6 +4717,25 @@ get_env_name(
 }
 
 /*
+ * Add a user name to the list of users in ga_users.
+ * Do nothing if user name is NULL or empty.
+ */
+    static void
+add_user(char_u *user, int need_copy)
+{
+    char_u	*user_copy = (user != NULL && need_copy)
+						    ? vim_strsave(user) : user;
+
+    if (user_copy == NULL || *user_copy == NUL || ga_grow(&ga_users, 1) == FAIL)
+    {
+	if (need_copy)
+	    vim_free(user);
+	return;
+    }
+    ((char_u **)(ga_users.ga_data))[ga_users.ga_len++] = user_copy;
+}
+
+/*
  * Find all user names for user completion.
  * Done only once and then cached.
  */
@@ -4745,26 +4752,15 @@ init_users(void)
 
 # if defined(HAVE_GETPWENT) && defined(HAVE_PWD_H)
     {
-	char_u*		user;
 	struct passwd*	pw;
 
 	setpwent();
 	while ((pw = getpwent()) != NULL)
-	    /* pw->pw_name shouldn't be NULL but just in case... */
-	    if (pw->pw_name != NULL)
-	    {
-		if (ga_grow(&ga_users, 1) == FAIL)
-		    break;
-		user = vim_strsave((char_u*)pw->pw_name);
-		if (user == NULL)
-		    break;
-		((char_u **)(ga_users.ga_data))[ga_users.ga_len++] = user;
-	    }
+	    add_user((char_u *)pw->pw_name, TRUE);
 	endpwent();
     }
 # elif defined(WIN3264)
     {
-	char_u*		user;
 	DWORD		nusers = 0, ntotal = 0, i;
 	PUSER_INFO_0	uinfo;
 
@@ -4772,16 +4768,41 @@ init_users(void)
 				       &nusers, &ntotal, NULL) == NERR_Success)
 	{
 	    for (i = 0; i < nusers; i++)
-	    {
-		if (ga_grow(&ga_users, 1) == FAIL)
-		    break;
-		user = utf16_to_enc(uinfo[i].usri0_name, NULL);
-		if (user == NULL)
-		    break;
-		((char_u **)(ga_users.ga_data))[ga_users.ga_len++] = user;
-	    }
+		add_user(utf16_to_enc(uinfo[i].usri0_name, NULL), FALSE);
 
 	    NetApiBufferFree(uinfo);
+	}
+    }
+# endif
+# if defined(HAVE_GETPWNAM)
+    {
+	char_u	*user_env = mch_getenv((char_u *)"USER");
+
+	// The $USER environment variable may be a valid remote user name (NIS,
+	// LDAP) not already listed by getpwent(), as getpwent() only lists
+	// local user names.  If $USER is not already listed, check whether it
+	// is a valid remote user name using getpwnam() and if it is, add it to
+	// the list of user names.
+
+	if (user_env != NULL && *user_env != NUL)
+	{
+	    int	i;
+
+	    for (i = 0; i < ga_users.ga_len; i++)
+	    {
+		char_u	*local_user = ((char_u **)ga_users.ga_data)[i];
+
+		if (STRCMP(local_user, user_env) == 0)
+		    break;
+	    }
+
+	    if (i == ga_users.ga_len)
+	    {
+		struct passwd	*pw = getpwnam((char *)user_env);
+
+		if (pw != NULL)
+		    add_user((char_u *)pw->pw_name, TRUE);
+	    }
 	}
     }
 # endif

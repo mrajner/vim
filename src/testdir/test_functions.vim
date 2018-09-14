@@ -1,4 +1,5 @@
 " Tests for various functions.
+source shared.vim
 
 " Must be done first, since the alternate buffer must be unset.
 func Test_00_bufexists()
@@ -682,6 +683,7 @@ endfunc
 
 func Test_byte2line_line2byte()
   new
+  set endofline
   call setline(1, ['a', 'bc', 'd'])
 
   set fileformat=unix
@@ -702,7 +704,16 @@ func Test_byte2line_line2byte()
   call assert_equal([-1, -1, 1, 4, 8, 11, -1],
   \                 map(range(-1, 5), 'line2byte(v:val)'))
 
-  set fileformat&
+  bw!
+  set noendofline nofixendofline
+  normal a-
+  for ff in ["unix", "mac", "dos"]
+    let &fileformat = ff
+    call assert_equal(1, line2byte(1))
+    call assert_equal(2, line2byte(2))  " line2byte(line("$") + 1) is the buffer size plus one (as per :help line2byte).
+  endfor
+
+  set endofline& fixendofline& fileformat&
   bw!
 endfunc
 
@@ -996,6 +1007,17 @@ func Test_libcall_libcallnr()
     let libc = 'msvcrt.dll'
   elseif has('mac')
     let libc = 'libSystem.B.dylib'
+  elseif system('uname -s') =~ 'SunOS'
+    " Set the path to libc.so according to the architecture.
+    let test_bits = system('file ' . GetVimProg())
+    let test_arch = system('uname -p')
+    if test_bits =~ '64-bit' && test_arch =~ 'sparc'
+      let libc = '/usr/lib/sparcv9/libc.so'
+    elseif test_bits =~ '64-bit' && test_arch =~ 'i386'
+      let libc = '/usr/lib/amd64/libc.so'
+    else
+      let libc = '/usr/lib/libc.so'
+    endif
   else
     " On Unix, libc.so can be in various places.
     " Interestingly, using an empty string for the 1st argument of libcall
