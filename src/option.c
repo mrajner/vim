@@ -1755,12 +1755,12 @@ static struct vimoption options[] =
     {"langmap",     "lmap", P_STRING|P_VI_DEF|P_ONECOMMA|P_NODUP|P_SECURE,
 #ifdef FEAT_LANGMAP
 			    (char_u *)&p_langmap, PV_NONE,
-			    {(char_u *)"",	/* unmatched } */
+			    {(char_u *)"", (char_u *)0L}
 #else
 			    (char_u *)NULL, PV_NONE,
-			    {(char_u *)NULL,
+			    {(char_u *)NULL, (char_u *)0L}
 #endif
-				(char_u *)0L} SCTX_INIT},
+			    SCTX_INIT},
     {"langmenu",    "lm",   P_STRING|P_VI_DEF|P_NFNAME,
 #if defined(FEAT_MENU) && defined(FEAT_MULTI_LANG)
 			    (char_u *)&p_lm, PV_NONE,
@@ -3281,15 +3281,10 @@ static char *(p_cot_values[]) = {"menu", "menuone", "longest", "preview", "noins
 static char *(p_scl_values[]) = {"yes", "no", "auto", NULL};
 #endif
 
-static void set_option_default(int, int opt_flags, int compatible);
 static void set_options_default(int opt_flags);
 static void set_string_default_esc(char *name, char_u *val, int escape);
 static char_u *term_bg_default(void);
 static void did_set_option(int opt_idx, int opt_flags, int new_value);
-static char_u *illegal_char(char_u *, int);
-#ifdef FEAT_CMDWIN
-static char_u *check_cedit(void);
-#endif
 static char_u *option_expand(int opt_idx, char_u *val);
 static void didset_options(void);
 static void didset_options2(void);
@@ -3300,12 +3295,8 @@ static long_u *insecure_flag(int opt_idx, int opt_flags);
 # define insecure_flag(opt_idx, opt_flags) (&options[opt_idx].flags)
 #endif
 static void set_string_option_global(int opt_idx, char_u **varp);
-static char_u *set_string_option(int opt_idx, char_u *value, int opt_flags);
 static char_u *did_set_string_option(int opt_idx, char_u **varp, int new_value_alloced, char_u *oldval, char_u *errbuf, int opt_flags);
 static char_u *set_chars_option(char_u **varp);
-#ifdef FEAT_SYN_HL
-static int int_cmp(const void *a, const void *b);
-#endif
 #ifdef FEAT_CLIPBOARD
 static char_u *check_clipboard_option(void);
 #endif
@@ -4279,8 +4270,6 @@ set_helplang_default(char_u *lang)
 #endif
 
 #ifdef FEAT_GUI
-static char_u *gui_bg_default(void);
-
     static char_u *
 gui_bg_default(void)
 {
@@ -4359,7 +4348,9 @@ trigger_optionsset_string(
 	char_u *oldval,
 	char_u *newval)
 {
-    if (oldval != NULL && newval != NULL)
+    // Don't do this recursively.
+    if (oldval != NULL && newval != NULL
+				    && *get_vim_var_str(VV_OPTION_TYPE) == NUL)
     {
 	char_u buf_type[7];
 
@@ -5799,20 +5790,32 @@ check_string_option(char_u **pp)
 }
 
 /*
- * Mark a terminal option as allocated, found by a pointer into term_strings[].
+ * Return the option index found by a pointer into term_strings[].
+ * Return -1 if not found.
  */
-    void
-set_term_option_alloced(char_u **p)
+    int
+get_term_opt_idx(char_u **p)
 {
-    int		opt_idx;
+    int opt_idx;
 
     for (opt_idx = 1; options[opt_idx].fullname != NULL; opt_idx++)
 	if (options[opt_idx].var == (char_u *)p)
-	{
-	    options[opt_idx].flags |= P_ALLOCED;
-	    return;
-	}
-    return; /* cannot happen: didn't find it! */
+	    return opt_idx;
+    return -1; // cannot happen: didn't find it!
+}
+
+/*
+ * Mark a terminal option as allocated, found by a pointer into term_strings[].
+ * Return the option index or -1 if not found.
+ */
+    int
+set_term_option_alloced(char_u **p)
+{
+    int		opt_idx = get_term_opt_idx(p);
+
+    if (opt_idx >= 0)
+	options[opt_idx].flags |= P_ALLOCED;
+    return opt_idx;
 }
 
 #if defined(FEAT_EVAL) || defined(PROTO)
@@ -5873,8 +5876,6 @@ insecure_flag(int opt_idx, int opt_flags)
 #endif
 
 #ifdef FEAT_TITLE
-static void redraw_titles(void);
-
 /*
  * Redraw the window title and/or tab page text later.
  */
@@ -7783,8 +7784,6 @@ did_set_string_option(
 #if defined(FEAT_VTP) && defined(FEAT_TERMGUICOLORS)
     if (did_swaptcap)
     {
-	if (t_colors < 256)
-	    p_tgc = 0;
 	set_termname((char_u *)"win32");
 	init_highlight(TRUE, FALSE);
     }
@@ -8250,6 +8249,32 @@ set_option_sctx_idx(int opt_idx, int opt_flags, sctx_T script_ctx)
 	    curwin->w_p_script_ctx[indir & PV_MASK] = new_script_ctx;
     }
 }
+
+/*
+ * Set the script_ctx for a termcap option.
+ * "name" must be the two character code, e.g. "RV".
+ * When "name" is NULL use "opt_idx".
+ */
+    void
+set_term_option_sctx_idx(char *name, int opt_idx)
+{
+    char_u  buf[5];
+    int	    idx;
+
+    if (name == NULL)
+	idx = opt_idx;
+    else
+    {
+	buf[0] = 't';
+	buf[1] = '_';
+	buf[2] = name[0];
+	buf[3] = name[1];
+	buf[4] = 0;
+	idx = findoption(buf);
+    }
+    if (idx >= 0)
+	set_option_sctx_idx(idx, OPT_GLOBAL, current_sctx);
+}
 #endif
 
 /*
@@ -8304,6 +8329,11 @@ set_bool_option(
     else if ((int *)varp == &p_lnr)
 	/* 'langnoremap' -> !'langremap' */
 	p_lrm = !p_lnr;
+#endif
+
+#ifdef FEAT_SYN_HL
+    else if ((int *)varp == &curwin->w_p_cul && !value && old_value)
+	reset_cursorline();
 #endif
 
 #ifdef FEAT_PERSISTENT_UNDO
@@ -8858,9 +8888,11 @@ set_bool_option(
     options[opt_idx].flags |= P_WAS_SET;
 
 #if defined(FEAT_EVAL)
-    if (!starting)
+    // Don't do this while starting up or recursively.
+    if (!starting && *get_vim_var_str(VV_OPTION_TYPE) == NUL)
     {
 	char_u buf_old[2], buf_new[2], buf_type[7];
+
 	vim_snprintf((char *)buf_old, 2, "%d", old_value ? TRUE: FALSE);
 	vim_snprintf((char *)buf_new, 2, "%d", value ? TRUE: FALSE);
 	vim_snprintf((char *)buf_type, 7, "%s", (opt_flags & OPT_LOCAL) ? "local" : "global");
@@ -9415,7 +9447,8 @@ set_num_option(
     options[opt_idx].flags |= P_WAS_SET;
 
 #if defined(FEAT_EVAL)
-    if (!starting && errmsg == NULL)
+    // Don't do this while starting up, failure or recursively.
+    if (!starting && errmsg == NULL && *get_vim_var_str(VV_OPTION_TYPE) == NUL)
     {
 	char_u buf_old[11], buf_new[11], buf_type[7];
 	vim_snprintf((char *)buf_old, 10, "%ld", old_value);
@@ -10450,7 +10483,7 @@ free_termoptions(void)
 {
     struct vimoption   *p;
 
-    for (p = &options[0]; p->fullname != NULL; p++)
+    for (p = options; p->fullname != NULL; p++)
 	if (istermoption(p))
 	{
 	    if (p->flags & P_ALLOCED)
@@ -10460,6 +10493,10 @@ free_termoptions(void)
 	    *(char_u **)(p->var) = empty_option;
 	    p->def_val[VI_DEFAULT] = empty_option;
 	    p->flags &= ~(P_ALLOCED|P_DEF_ALLOCED);
+#ifdef FEAT_EVAL
+	    // remember where the option was cleared
+	    set_option_sctx_idx((int)(p - options), OPT_GLOBAL, current_sctx);
+#endif
 	}
     clear_termcodes();
 }
@@ -12019,7 +12056,6 @@ typedef struct
 } langmap_entry_T;
 
 static garray_T langmap_mapga;
-static void langmap_set_entry(int from, int to);
 
 /*
  * Search for an entry in "langmap_mapga" for "from".  If found set the "to"
@@ -12750,17 +12786,18 @@ tabstop_set(char_u *var, int **array)
     int t;
     char_u *cp;
 
-    if ((!var[0] || (var[0] == '0' && !var[1])))
+    if (var[0] == NUL || (var[0] == '0' && var[1] == NUL))
     {
 	*array = NULL;
 	return TRUE;
     }
 
-    for (cp = var; *cp; ++cp)
+    for (cp = var; *cp != NUL; ++cp)
     {
-	if (cp == var || *(cp - 1) == ',')
+	if (cp == var || cp[-1] == ',')
 	{
 	    char_u *end;
+
 	    if (strtol((char *)cp, (char **)&end, 10) <= 0)
 	    {
 		if (cp != end)
@@ -12773,7 +12810,7 @@ tabstop_set(char_u *var, int **array)
 
 	if (VIM_ISDIGIT(*cp))
 	    continue;
-	if (*cp == ',' && cp > var && *(cp - 1) != ',')
+	if (cp[0] == ',' && cp > var && cp[-1] != ',' && cp[1] != NUL)
 	{
 	    ++valcount;
 	    continue;
@@ -12782,16 +12819,16 @@ tabstop_set(char_u *var, int **array)
 	return FALSE;
     }
 
-    *array = (int *) alloc((unsigned) ((valcount + 1) * sizeof(int)));
+    *array = (int *)alloc((unsigned) ((valcount + 1) * sizeof(int)));
     (*array)[0] = valcount;
 
     t = 1;
-    for (cp = var; *cp;)
+    for (cp = var; *cp != NUL;)
     {
 	(*array)[t++] = atoi((char *)cp);
-	while (*cp && *cp != ',')
+	while (*cp  != NUL && *cp != ',')
 	    ++cp;
-	if (*cp)
+	if (*cp != NUL)
 	    ++cp;
     }
 

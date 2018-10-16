@@ -35,6 +35,9 @@ FEATURES=HUGE
 # set to yes for a debug build
 DEBUG=no
 
+# set to yes to create a mapfile
+# MAP=yes
+
 # set to SIZE for size, SPEED for speed, MAXSPEED for maximum optimization
 OPTIMIZE=MAXSPEED
 
@@ -244,6 +247,8 @@ endif
 
 #	Lua interface:
 #	  LUA=[Path to Lua directory] (Set inside Make_cyg.mak or Make_ming.mak)
+#	  LUA_LIBDIR=[Path to Lua library directory] (default: $LUA/lib)
+#	  LUA_INCDIR=[Path to Lua include directory] (default: $LUA/include)
 #	  DYNAMIC_LUA=yes (to load the Lua DLL dynamically)
 #	  LUA_VER=[Lua version, eg 51, 52] (default is 53)
 ifdef LUA
@@ -256,7 +261,8 @@ LUA_VER=53
 endif
 
 ifeq (no,$(DYNAMIC_LUA))
-LUA_LIB = -L$(LUA)/lib -llua
+LUA_LIBDIR = $(LUA)/lib
+LUA_LIB = -L$(LUA_LIBDIR) -llua
 endif
 
 endif
@@ -472,9 +478,10 @@ ifeq (19, $(word 1,$(sort 19 $(RUBY_VER))))
 RUBY_19_OR_LATER = 1
 endif
 
-RUBYINC = -I $(RUBY)/lib/ruby/$(RUBY_API_VER_LONG)/$(RUBY_PLATFORM)
 ifdef RUBY_19_OR_LATER
-RUBYINC += -I $(RUBY)/include/ruby-$(RUBY_API_VER_LONG) -I $(RUBY)/include/ruby-$(RUBY_API_VER_LONG)/$(RUBY_PLATFORM)
+RUBYINC = -I $(RUBY)/include/ruby-$(RUBY_API_VER_LONG) -I $(RUBY)/include/ruby-$(RUBY_API_VER_LONG)/$(RUBY_PLATFORM)
+else
+RUBYINC = -I $(RUBY)/lib/ruby/$(RUBY_API_VER_LONG)/$(RUBY_PLATFORM)
 endif
 ifeq (no, $(DYNAMIC_RUBY))
 RUBYLIB = -L$(RUBY)/lib -l$(RUBY_INSTALL_NAME)
@@ -524,7 +531,8 @@ endif
 endif
 
 ifdef LUA
-CFLAGS += -I$(LUA)/include -I$(LUA) -DFEAT_LUA
+LUA_INCDIR = $(LUA)/include
+CFLAGS += -I$(LUA_INCDIR) -I$(LUA) -DFEAT_LUA
 ifeq (yes, $(DYNAMIC_LUA))
 CFLAGS += -DDYNAMIC_LUA -DDYNAMIC_LUA_DLL=\"lua$(LUA_VER).dll\"
 endif
@@ -931,6 +939,10 @@ ifeq (yes, $(STATIC_WINPTHREAD))
 LIB += -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic
 endif
 
+ifeq (yes, $(MAP))
+LFLAGS += -Wl,-Map=$(TARGET).map
+endif
+
 all: $(TARGET) vimrun.exe xxd/xxd.exe install.exe uninstal.exe GvimExt/gvimext.dll
 
 vimrun.exe: vimrun.c
@@ -973,6 +985,7 @@ clean:
 	-$(DEL) pathdef.c
 ifdef PERL
 	-$(DEL) if_perl.c
+	-$(DEL) auto$(DIRSLASH)if_perl.c
 endif
 ifdef MZSCHEME
 	-$(DEL) mzscheme_base.c
@@ -1031,9 +1044,13 @@ mzscheme_base.c:
 $(OUTDIR)/if_ole.o:	if_ole.cpp $(INCL) if_ole.h
 	$(CC) $(CFLAGS) $(CXXFLAGS) -c -o $(OUTDIR)/if_ole.o if_ole.cpp
 
-if_perl.c:		if_perl.xs typemap
+auto/if_perl.c:		if_perl.xs typemap
 	$(XSUBPP) -prototypes -typemap \
 	     $(PERLTYPEMAP) if_perl.xs -output $@
+
+$(OUTDIR)/if_perl.o:	auto/if_perl.c $(INCL)
+	$(CC) -c $(CFLAGS) -I. auto/if_perl.c -o $(OUTDIR)/if_perl.o
+
 
 $(OUTDIR)/if_ruby.o:	if_ruby.c $(INCL)
 ifeq (16, $(RUBY))
