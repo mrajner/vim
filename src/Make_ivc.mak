@@ -211,6 +211,7 @@ ALL : .\$(VIM).exe vimrun.exe install.exe uninstal.exe xxd/xxd.exe GvimExt/gvime
 LINK32_OBJS= \
 	$(EXTRAS) \
 	"$(INTDIR)/arabic.obj" \
+	"$(INTDIR)/autocmd.obj" \
 	"$(INTDIR)/blowfish.obj" \
 	"$(INTDIR)/buffer.obj" \
 	"$(INTDIR)/charset.obj" \
@@ -257,6 +258,7 @@ LINK32_OBJS= \
 	"$(INTDIR)/screen.obj" \
 	"$(INTDIR)/search.obj" \
 	"$(INTDIR)/sha256.obj" \
+	"$(INTDIR)/sign.obj" \
 	"$(INTDIR)/spell.obj" \
 	"$(INTDIR)/spellfile.obj" \
 	"$(INTDIR)/syntax.obj" \
@@ -338,6 +340,10 @@ GvimExt/gvimext.dll: GvimExt/gvimext.cpp GvimExt/gvimext.rc GvimExt/gvimext.h
 # Begin Source File
 
 SOURCE=.\arabic.c
+# End Source File
+# Begin Source File
+#
+SOURCE=.\autocmd.c
 # End Source File
 # Begin Source File
 
@@ -672,6 +678,10 @@ SOURCE=.\search.c
 # Begin Source File
 
 SOURCE=.\sha256.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\sign.c
 # End Source File
 # Begin Source File
 

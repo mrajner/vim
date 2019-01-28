@@ -26,14 +26,12 @@
 #	GUI interface: GUI=yes (default is no)
 #
 #	GUI with DirectWrite (DirectX): DIRECTX=yes
-#	  (default is yes if GUI=yes, requires GUI=yes and MBYTE=yes)
+#	  (default is yes if GUI=yes, requires GUI=yes)
 #
 #	Color emoji support: COLOR_EMOJI=yes
 #	  (default is yes if DIRECTX=yes, requires WinSDK 8.1 or later.)
 #
 #	OLE interface: OLE=yes (usually with GUI=yes)
-#
-#	Multibyte support: MBYTE=yes (default is yes for NORMAL, BIG, HUGE)
 #
 #	IME support: IME=yes	(requires GUI=yes)
 #	  DYNAMIC_IME=[yes or no]  (to load the imm32.dll dynamically, default
@@ -694,6 +692,7 @@ CFLAGS = $(CFLAGS) /Zl /MTd
 !endif # DEBUG
 
 !include Make_all.mak
+!include testdir\Make_all.mak
 
 INCL =	vim.h alloc.h arabic.h ascii.h ex_cmds.h farsi.h feature.h globals.h \
 	keymap.h macros.h option.h os_dos.h os_win32.h proto.h regexp.h \
@@ -701,7 +700,9 @@ INCL =	vim.h alloc.h arabic.h ascii.h ex_cmds.h farsi.h feature.h globals.h \
 
 OBJ = \
 	$(OUTDIR)\arabic.obj \
+	$(OUTDIR)\autocmd.obj \
 	$(OUTDIR)\beval.obj \
+	$(OUTDIR)\blob.obj \
 	$(OUTDIR)\blowfish.obj \
 	$(OUTDIR)\buffer.obj \
 	$(OUTDIR)\charset.obj \
@@ -749,11 +750,13 @@ OBJ = \
 	$(OUTDIR)\screen.obj \
 	$(OUTDIR)\search.obj \
 	$(OUTDIR)\sha256.obj \
+	$(OUTDIR)\sign.obj \
 	$(OUTDIR)\spell.obj \
 	$(OUTDIR)\spellfile.obj \
 	$(OUTDIR)\syntax.obj \
 	$(OUTDIR)\tag.obj \
 	$(OUTDIR)\term.obj \
+	$(OUTDIR)\textprop.obj \
 	$(OUTDIR)\ui.obj \
 	$(OUTDIR)\undo.obj \
 	$(OUTDIR)\userfunc.obj \
@@ -783,11 +786,6 @@ IME_LIB = imm32.lib
 !if "$(GIME)" == "yes"
 CFLAGS = $(CFLAGS) -DGLOBAL_IME
 OBJ = $(OBJ) $(OUTDIR)\dimm_i.obj $(OUTDIR)\glbl_ime.obj
-MBYTE = yes
-!endif
-
-!if "$(MBYTE)" == "yes"
-CFLAGS = $(CFLAGS) -DFEAT_MBYTE
 !endif
 
 !if "$(GUI)" == "yes"
@@ -1269,7 +1267,7 @@ GvimExt/gvimext.dll: GvimExt/gvimext.cpp GvimExt/gvimext.rc GvimExt/gvimext.h
 
 
 tags: notags
-	$(CTAGS) *.c *.cpp *.h if_perl.xs
+	$(CTAGS) $(TAGS_FILES)
 
 notags:
 	- if exist tags del tags
@@ -1323,7 +1321,7 @@ $(NEW_TESTS):
 	$(MAKE) /NOLOGO -f Make_dos.mak nolog
 	$(MAKE) /NOLOGO -f Make_dos.mak $@.res
 	$(MAKE) /NOLOGO -f Make_dos.mak report
-	cat messages
+	type messages
 	cd ..
 
 ###########################################################################
@@ -1348,7 +1346,11 @@ $(NEW_TESTS):
 
 $(OUTDIR)/arabic.obj:	$(OUTDIR) arabic.c  $(INCL)
 
+$(OUTDIR)/autocmd.obj:	$(OUTDIR) autocmd.c  $(INCL)
+
 $(OUTDIR)/beval.obj:	$(OUTDIR) beval.c  $(INCL)
+
+$(OUTDIR)/blob.obj:	$(OUTDIR) blob.c  $(INCL)
 
 $(OUTDIR)/blowfish.obj:	$(OUTDIR) blowfish.c  $(INCL)
 
@@ -1518,6 +1520,8 @@ $(OUTDIR)/search.obj:	$(OUTDIR) search.c  $(INCL)
 
 $(OUTDIR)/sha256.obj:	$(OUTDIR) sha256.c  $(INCL)
 
+$(OUTDIR)/sign.obj:	$(OUTDIR) sign.c  $(INCL)
+
 $(OUTDIR)/spell.obj:	$(OUTDIR) spell.c  $(INCL)
 
 $(OUTDIR)/spellfile.obj:	$(OUTDIR) spellfile.c  $(INCL)
@@ -1527,6 +1531,8 @@ $(OUTDIR)/syntax.obj:	$(OUTDIR) syntax.c  $(INCL)
 $(OUTDIR)/tag.obj:	$(OUTDIR) tag.c  $(INCL)
 
 $(OUTDIR)/term.obj:	$(OUTDIR) term.c  $(INCL)
+
+$(OUTDIR)/textprop.obj:	$(OUTDIR) textprop.c  $(INCL)
 
 $(OUTDIR)/ui.obj:	$(OUTDIR) ui.c  $(INCL)
 
@@ -1616,6 +1622,8 @@ auto:
 # End Custom Build
 proto.h: \
 	proto/arabic.pro \
+	proto/autocmd.pro \
+	proto/blob.pro \
 	proto/blowfish.pro \
 	proto/buffer.pro \
 	proto/charset.pro \
@@ -1661,11 +1669,13 @@ proto.h: \
 	proto/screen.pro \
 	proto/search.pro \
 	proto/sha256.pro \
+	proto/sign.pro \
 	proto/spell.pro \
 	proto/spellfile.pro \
 	proto/syntax.pro \
 	proto/tag.pro \
 	proto/term.pro \
+	proto/textprop.pro \
 	proto/ui.pro \
 	proto/undo.pro \
 	proto/userfunc.pro \

@@ -221,6 +221,26 @@ func Test_diffget_diffput()
   %bwipe!
 endfunc
 
+" Test putting two changes from one buffer to another
+func Test_diffput_two()
+  new a
+  let win_a = win_getid()
+  call setline(1, range(1, 10))
+  diffthis
+  new b
+  let win_b = win_getid()
+  call setline(1, range(1, 10))
+  8del
+  5del
+  diffthis
+  call win_gotoid(win_a)
+  %diffput
+  call win_gotoid(win_b)
+  call assert_equal(map(range(1, 10), 'string(v:val)'), getline(1, '$'))
+  bwipe! a
+  bwipe! b
+endfunc
+
 func Test_dp_do_buffer()
   e! one
   let bn1=bufnr('%')
@@ -793,8 +813,16 @@ func Test_diff_screen()
   call term_sendkeys(buf, ":set diffopt+=internal\<cr>")
   call VerifyScreenDump(buf, 'Test_diff_10', {})
 
-  call term_sendkeys(buf, ":set diffopt+=indent-heuristic\<cr>")
-  call VerifyScreenDump(buf, 'Test_diff_11', {})
+  " Leave trailing : at commandline!
+  call term_sendkeys(buf, ":set diffopt+=indent-heuristic\<cr>:\<cr>")
+  call VerifyScreenDump(buf, 'Test_diff_11', {}, 'one')
+  " shouldn't matter, if indent-algorithm comes before or after the algorithm
+  call term_sendkeys(buf, ":set diffopt&\<cr>")
+  call term_sendkeys(buf, ":set diffopt+=indent-heuristic,algorithm:patience\<cr>:\<cr>")
+  call VerifyScreenDump(buf, 'Test_diff_11', {}, 'two')
+  call term_sendkeys(buf, ":set diffopt&\<cr>")
+  call term_sendkeys(buf, ":set diffopt+=algorithm:patience,indent-heuristic\<cr>:\<cr>")
+  call VerifyScreenDump(buf, 'Test_diff_11', {}, 'three')
 
   " Test 12: diff the same file
   call WriteDiffFiles(buf, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
@@ -864,4 +892,24 @@ func Test_diff_with_cursorline()
   " clean up
   call StopVimInTerminal(buf)
   call delete('Xtest_diff_cursorline')
+endfunc
+
+func Test_diff_of_diff()
+  if !CanRunVimInTerminal()
+    return
+  endif
+
+  call writefile([
+	\ 'call setline(1, ["aa","bb","cc","@@ -3,2 +5,7 @@","dd","ee","ff"])',
+	\ 'vnew',
+	\ 'call setline(1, ["aa","bb","cc"])',
+	\ 'windo diffthis',
+	\ ], 'Xtest_diff_diff')
+  let buf = RunVimInTerminal('-S Xtest_diff_diff', {})
+
+  call VerifyScreenDump(buf, 'Test_diff_of_diff_01', {})
+
+  " clean up
+  call StopVimInTerminal(buf)
+  call delete('Xtest_diff_diff')
 endfunc

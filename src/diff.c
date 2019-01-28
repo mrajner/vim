@@ -173,7 +173,7 @@ diff_buf_add(buf_T *buf)
 	    return;
 	}
 
-    EMSGN(_("E96: Cannot diff more than %ld buffers"), DB_COUNT);
+    semsg(_("E96: Cannot diff more than %d buffers"), DB_COUNT);
 }
 
 /*
@@ -298,9 +298,9 @@ diff_mark_adjust_tp(
 	// Will update diffs before redrawing.  Set _invalid to update the
 	// diffs themselves, set _update to also update folds properly just
 	// before redrawing.
+	// Do update marks here, it is needed for :%diffput.
 	tp->tp_diff_invalid = TRUE;
 	tp->tp_diff_update = TRUE;
-	return;
     }
 
     if (line2 == MAXLNUM)
@@ -724,8 +724,7 @@ diff_write_buffer(buf_T *buf, diffin_T *din)
 	if (p_verbose > 0)
 	{
 	    verbose_enter();
-	    smsg((char_u *)
-		 _("Not enough memory to use internal diff for buffer \"%s\""),
+	    smsg(_("Not enough memory to use internal diff for buffer \"%s\""),
 								 buf->b_fname);
 	    verbose_leave();
 	}
@@ -742,12 +741,10 @@ diff_write_buffer(buf_T *buf, diffin_T *din)
 	    if (diff_flags & DIFF_ICASE)
 	    {
 		int c;
-
-		// xdiff doesn't support ignoring case, fold-case the text.
-#ifdef FEAT_MBYTE
 		int	orig_len;
 		char_u	cbuf[MB_MAXBYTES + 1];
 
+		// xdiff doesn't support ignoring case, fold-case the text.
 		c = PTR2CHAR(s);
 		c = enc_utf8 ? utf_fold(c) : MB_TOLOWER(c);
 		orig_len = MB_PTR2LEN(s);
@@ -759,10 +756,6 @@ diff_write_buffer(buf_T *buf, diffin_T *din)
 
 		s += orig_len;
 		len += orig_len;
-#else
-		c = *s++;
-		ptr[len++] = TOLOWER_LOC(c);
-#endif
 	    }
 	    else
 		ptr[len++] = *s++;
@@ -1050,8 +1043,8 @@ check_external_diff(diffio_T *diffio)
     if (!ok)
     {
 	if (io_error)
-	    EMSG(_("E810: Cannot read or write temp files"));
-	EMSG(_("E97: Cannot create diffs"));
+	    emsg(_("E810: Cannot read or write temp files"));
+	emsg(_("E97: Cannot create diffs"));
 	diff_a_works = MAYBE;
 #if defined(MSWIN)
 	diff_bin_works = MAYBE;
@@ -1093,7 +1086,7 @@ diff_file_internal(diffio_T *diffio)
 		&diffio->dio_new.din_mmfile,
 		&param, &emit_cfg, &emit_cb) < 0)
     {
-	EMSG(_("E960: Problem creating the internal diff"));
+	emsg(_("E960: Problem creating the internal diff"));
 	return FAIL;
     }
     return OK;
@@ -1273,7 +1266,7 @@ ex_diffpatch(exarg_T *eap)
     if (dirbuf[0] != NUL)
     {
 	if (mch_chdir((char *)dirbuf) != 0)
-	    EMSG(_(e_prev_dir));
+	    emsg(_(e_prev_dir));
 	shorten_fnames(TRUE);
     }
 #endif
@@ -1291,7 +1284,7 @@ ex_diffpatch(exarg_T *eap)
 
     /* Only continue if the output file was created. */
     if (mch_stat((char *)tmp_new, &st) < 0 || st.st_size == 0)
-	EMSG(_("E816: Cannot read patch output"));
+	emsg(_("E816: Cannot read patch output"));
     else
     {
 	if (curbuf->b_fname != NULL)
@@ -1596,7 +1589,7 @@ diff_read(
 	fd = mch_fopen((char *)dout->dout_fname, "r");
 	if (fd == NULL)
 	{
-	    EMSG(_("E98: Cannot read diff output"));
+	    emsg(_("E98: Cannot read diff output"));
 	    return;
 	}
     }
@@ -1662,7 +1655,7 @@ diff_read(
 	}
 	else
 	{
-	    EMSG(_("E959: Invalid diff format."));
+	    emsg(_("E959: Invalid diff format."));
 	    break;
 	}
 
@@ -1947,7 +1940,6 @@ diff_equal_entry(diff_T *dp, int idx1, int idx2)
     static int
 diff_equal_char(char_u *p1, char_u *p2, int *len)
 {
-#ifdef FEAT_MBYTE
     int l  = (*mb_ptr2len)(p1);
 
     if (l != (*mb_ptr2len)(p2))
@@ -1963,7 +1955,6 @@ diff_equal_char(char_u *p1, char_u *p2, int *len)
 	*len = l;
     }
     else
-#endif
     {
 	if ((*p1 != *p2)
 		&& (!(diff_flags & DIFF_ICASE)
@@ -2173,6 +2164,7 @@ diffopt_changed(void)
     int		diff_flags_new = 0;
     int		diff_foldcolumn_new = 2;
     long	diff_algorithm_new = 0;
+    long	diff_indent_heuristic = 0;
     tabpage_T	*tp;
 
     p = p_dip;
@@ -2236,7 +2228,7 @@ diffopt_changed(void)
 	else if (STRNCMP(p, "indent-heuristic", 16) == 0)
 	{
 	    p += 16;
-	    diff_algorithm_new |= XDF_INDENT_HEURISTIC;
+	    diff_indent_heuristic = XDF_INDENT_HEURISTIC;
 	}
 	else if (STRNCMP(p, "internal", 8) == 0)
 	{
@@ -2266,6 +2258,8 @@ diffopt_changed(void)
 		p += 9;
 		diff_algorithm_new = XDF_HISTOGRAM_DIFF;
 	    }
+	    else
+		return FAIL;
 	}
 
 	if (*p != ',' && *p != NUL)
@@ -2273,6 +2267,8 @@ diffopt_changed(void)
 	if (*p == ',')
 	    ++p;
     }
+
+    diff_algorithm_new |= diff_indent_heuristic;
 
     /* Can't have both "horizontal" and "vertical". */
     if ((diff_flags_new & DIFF_HORIZONTAL) && (diff_flags_new & DIFF_VERTICAL))
@@ -2396,7 +2392,6 @@ diff_find_change(
 		    si_new += l;
 		}
 	    }
-#ifdef FEAT_MBYTE
 	    if (has_mbyte)
 	    {
 		/* Move back to first byte of character in both lines (may
@@ -2404,7 +2399,6 @@ diff_find_change(
 		si_org -= (*mb_head_off)(line_org, line_org + si_org);
 		si_new -= (*mb_head_off)(line_new, line_new + si_new);
 	    }
-#endif
 	    if (*startp > si_org)
 		*startp = si_org;
 
@@ -2434,10 +2428,8 @@ diff_find_change(
 		    {
 			p1 = line_org + ei_org;
 			p2 = line_new + ei_new;
-#ifdef FEAT_MBYTE
 			p1 -= (*mb_head_off)(line_org, p1);
 			p2 -= (*mb_head_off)(line_new, p2);
-#endif
 			if (!diff_equal_char(p1, p2, &l))
 			    break;
 			ei_org -= l;
@@ -2567,7 +2559,7 @@ ex_diffgetput(exarg_T *eap)
     idx_cur = diff_buf_idx(curbuf);
     if (idx_cur == DB_COUNT)
     {
-	EMSG(_("E99: Current buffer is not in diff mode"));
+	emsg(_("E99: Current buffer is not in diff mode"));
 	return;
     }
 
@@ -2586,9 +2578,9 @@ ex_diffgetput(exarg_T *eap)
 	if (idx_other == DB_COUNT)
 	{
 	    if (found_not_ma)
-		EMSG(_("E793: No other buffer in diff mode is modifiable"));
+		emsg(_("E793: No other buffer in diff mode is modifiable"));
 	    else
-		EMSG(_("E100: No other buffer in diff mode"));
+		emsg(_("E100: No other buffer in diff mode"));
 	    return;
 	}
 
@@ -2598,7 +2590,7 @@ ex_diffgetput(exarg_T *eap)
 		    && curtab->tp_diffbuf[i] != NULL
 		    && (eap->cmdidx != CMD_diffput || curtab->tp_diffbuf[i]->b_p_ma))
 	    {
-		EMSG(_("E101: More than two buffers in diff mode, don't know which one to use"));
+		emsg(_("E101: More than two buffers in diff mode, don't know which one to use"));
 		return;
 	    }
     }
@@ -2621,7 +2613,7 @@ ex_diffgetput(exarg_T *eap)
 	buf = buflist_findnr(i);
 	if (buf == NULL)
 	{
-	    EMSG2(_("E102: Can't find buffer \"%s\""), eap->arg);
+	    semsg(_("E102: Can't find buffer \"%s\""), eap->arg);
 	    return;
 	}
 	if (buf == curbuf)
@@ -2629,7 +2621,7 @@ ex_diffgetput(exarg_T *eap)
 	idx_other = diff_buf_idx(buf);
 	if (idx_other == DB_COUNT)
 	{
-	    EMSG2(_("E103: Buffer \"%s\" is not in diff mode"), eap->arg);
+	    semsg(_("E103: Buffer \"%s\" is not in diff mode"), eap->arg);
 	    return;
 	}
     }
@@ -2673,7 +2665,7 @@ ex_diffgetput(exarg_T *eap)
 	change_warning(0);
 	if (diff_buf_idx(curbuf) != idx_to)
 	{
-	    EMSG(_("E787: Buffer changed unexpectedly"));
+	    emsg(_("E787: Buffer changed unexpectedly"));
 	    goto theend;
 	}
     }
@@ -2850,7 +2842,7 @@ theend:
     if (diff_need_update)
 	ex_diffupdate(NULL);
 
-    // Check that the cursor is on a valid character and update it's
+    // Check that the cursor is on a valid character and update its
     // position.  When there were filler lines the topline has become
     // invalid.
     check_cursor();
@@ -3206,21 +3198,23 @@ parse_diff_unified(
 xdiff_out(void *priv, mmbuffer_t *mb, int nbuf)
 {
     diffout_T	*dout = (diffout_T *)priv;
-    int		i;
     char_u	*p;
 
-    for (i = 0; i < nbuf; i++)
-    {
-	// We are only interested in the header lines, skip text lines.
-	if (STRNCMP(mb[i].ptr, "@@ ", 3)  != 0)
-	    continue;
-	if (ga_grow(&dout->dout_ga, 1) == FAIL)
-	    return -1;
-	p = vim_strnsave((char_u *)mb[i].ptr, mb[i].size);
-	if (p == NULL)
-	    return -1;
-	((char_u **)dout->dout_ga.ga_data)[dout->dout_ga.ga_len++] = p;
-    }
+    // The header line always comes by itself, text lines in at least two
+    // parts.  We drop the text part.
+    if (nbuf > 1)
+	return 0;
+
+    // sanity check
+    if (STRNCMP(mb[0].ptr, "@@ ", 3)  != 0)
+	return 0;
+
+    if (ga_grow(&dout->dout_ga, 1) == FAIL)
+	return -1;
+    p = vim_strnsave((char_u *)mb[0].ptr, mb[0].size);
+    if (p == NULL)
+	return -1;
+    ((char_u **)dout->dout_ga.ga_data)[dout->dout_ga.ga_len++] = p;
     return 0;
 }
 

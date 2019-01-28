@@ -10,6 +10,7 @@ source test_changedtick.vim
 source test_compiler.vim
 source test_cursor_func.vim
 source test_delete.vim
+source test_ex_equal.vim
 source test_ex_undo.vim
 source test_ex_z.vim
 source test_execute_func.vim
@@ -41,6 +42,7 @@ source test_match.vim
 source test_menu.vim
 source test_messages.vim
 source test_modeline.vim
+source test_move.vim
 source test_partial.vim
 source test_popup.vim
 source test_put.vim
